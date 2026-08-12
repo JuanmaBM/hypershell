@@ -295,6 +295,14 @@ func (r *GatewayReconciler) Handle(ctx context.Context, event watcher.Event[*pb.
 		gwConfig.Database = dbConfig
 	}
 
+	if gw.CredentialDriver != nil && *gw.CredentialDriver != "" {
+		var credDriverConfig gateway.CredentialDriverConfig
+		if err := json.Unmarshal([]byte(*gw.CredentialDriver), &credDriverConfig); err != nil {
+			return fmt.Errorf("invalid credential driver config for gateway %s: %w", gw.Name, err)
+		}
+		gwConfig.CredentialDriver = &credDriverConfig
+	}
+
 	nsConfig := gateway.NamespaceConfig{
 		Name:    namespace,
 		Gateway: gwConfig,

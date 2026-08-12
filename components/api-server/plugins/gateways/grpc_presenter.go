@@ -32,7 +32,8 @@ func gatewayToProto(d *Gateway) *pb.Gateway {
 		RouteAddress:    d.RouteAddress,
 		Oidc:            d.Oidc,
 		Route:           d.Route,
-		DatabaseConfig:  d.DatabaseConfig,
+		DatabaseConfig:   d.DatabaseConfig,
+		CredentialDriver: d.CredentialDriver,
 	}
 
 	if d.ServerDnsNames != nil {

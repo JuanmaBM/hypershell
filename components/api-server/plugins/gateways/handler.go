@@ -134,6 +134,9 @@ func (h gatewayHandler) Patch(w http.ResponseWriter, r *http.Request) {
 			if patch.DatabaseConfig != nil {
 				found.DatabaseConfig = patch.DatabaseConfig
 			}
+			if patch.CredentialDriver != nil {
+				found.CredentialDriver = patch.CredentialDriver
+			}
 
 			gatewayModel, err := h.gateway.Replace(ctx, found)
 			if err != nil {

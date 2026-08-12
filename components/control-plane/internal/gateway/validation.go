@@ -66,6 +66,29 @@ func ValidateGatewayConfig(config GatewayConfig) error {
 		return fmt.Errorf("invalid OIDC config: %w", err)
 	}
 
+	if err := ValidateCredentialDriverConfig(config.CredentialDriver); err != nil {
+		return fmt.Errorf("invalid credential driver config: %w", err)
+	}
+
+	return nil
+}
+
+func ValidateCredentialDriverConfig(config *CredentialDriverConfig) error {
+	if config == nil {
+		return nil
+	}
+
+	switch config.Type {
+	case "kubernetes-secrets":
+		// no required sub-fields
+	case "vault":
+		if config.Vault == nil || config.Vault.Address == "" || config.Vault.Role == "" {
+			return fmt.Errorf("vault credential driver requires \"address\" and \"role\"")
+		}
+	default:
+		return fmt.Errorf("unsupported credential driver type %q; supported: kubernetes-secrets, vault", config.Type)
+	}
+
 	return nil
 }
 
