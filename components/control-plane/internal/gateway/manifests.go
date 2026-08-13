@@ -209,7 +209,7 @@ func injectPGDATA(obj *unstructured.Unstructured, mountPath string) {
 	_ = unstructured.SetNestedSlice(obj.Object, containers, "spec", "template", "spec", "containers")
 }
 
-func ApplyConfigOverrides(obj *unstructured.Unstructured, config GatewayConfig) error {
+func ApplyConfigOverrides(obj *unstructured.Unstructured, config GatewayConfig, tenantNamespace ...string) error {
 	kind := obj.GetKind()
 
 	if kind == "ConfigMap" && obj.GetName() == "openshell-gateway-config" && (len(config.ServerDnsNames) > 0 || config.CredentialDriver != nil) {
@@ -277,7 +277,11 @@ func ApplyConfigOverrides(obj *unstructured.Unstructured, config GatewayConfig) 
 		}
 
 		if config.CredentialDriver != nil {
-			lines = applyCredentialDriverToml(lines, config.CredentialDriver)
+			ns := ""
+			if len(tenantNamespace) > 0 {
+				ns = tenantNamespace[0]
+			}
+			lines = applyCredentialDriverToml(lines, config.CredentialDriver, ns)
 		}
 
 		data["gateway.toml"] = strings.Join(lines, "\n")
@@ -339,7 +343,18 @@ func ApplyConfigOverrides(obj *unstructured.Unstructured, config GatewayConfig) 
 	return nil
 }
 
-func applyCredentialDriverToml(lines []string, driver *CredentialDriverConfig) []string {
+func tomlEscapeString(s string) string {
+	r := strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+		"\n", `\n`,
+		"\r", `\r`,
+		"\t", `\t`,
+	)
+	return r.Replace(s)
+}
+
+func applyCredentialDriverToml(lines []string, driver *CredentialDriverConfig, tenantNamespace string) []string {
 	var result []string
 	skip := false
 	for _, line := range lines {
@@ -362,7 +377,7 @@ func applyCredentialDriverToml(lines []string, driver *CredentialDriverConfig) [
 
 	switch driver.Type {
 	case "kubernetes-secrets":
-		ns := ""
+		ns := tenantNamespace
 		if driver.KubernetesSecrets != nil && driver.KubernetesSecrets.Namespace != "" {
 			ns = driver.KubernetesSecrets.Namespace
 		}
@@ -371,7 +386,7 @@ func applyCredentialDriverToml(lines []string, driver *CredentialDriverConfig) [
 		result = append(result, "")
 		result = append(result, "    [openshell.credential_drivers.kubernetes-secrets]")
 		if ns != "" {
-			result = append(result, fmt.Sprintf("    namespace = \"%s\"", ns))
+			result = append(result, fmt.Sprintf("    namespace = \"%s\"", tomlEscapeString(ns)))
 		}
 	case "vault":
 		v := driver.Vault
@@ -395,11 +410,11 @@ func applyCredentialDriverToml(lines []string, driver *CredentialDriverConfig) [
 		result = append(result, "    credential_drivers = [\"vault\"]")
 		result = append(result, "")
 		result = append(result, "    [openshell.credential_drivers.vault]")
-		result = append(result, fmt.Sprintf("    address = \"%s\"", v.Address))
-		result = append(result, fmt.Sprintf("    mount = \"%s\"", mount))
-		result = append(result, fmt.Sprintf("    auth_method = \"%s\"", authMethod))
-		result = append(result, fmt.Sprintf("    role = \"%s\"", v.Role))
-		result = append(result, fmt.Sprintf("    kubernetes_auth_mount = \"%s\"", kubeAuthMount))
+		result = append(result, fmt.Sprintf("    address = \"%s\"", tomlEscapeString(v.Address)))
+		result = append(result, fmt.Sprintf("    mount = \"%s\"", tomlEscapeString(mount)))
+		result = append(result, fmt.Sprintf("    auth_method = \"%s\"", tomlEscapeString(authMethod)))
+		result = append(result, fmt.Sprintf("    role = \"%s\"", tomlEscapeString(v.Role)))
+		result = append(result, fmt.Sprintf("    kubernetes_auth_mount = \"%s\"", tomlEscapeString(kubeAuthMount)))
 		result = append(result, fmt.Sprintf("    timeout_secs = %d", timeoutSecs))
 		if authMethod == "kubernetes" {
 			result = append(result, "    service_account_token_path = \"/var/run/secrets/vault/token\"")

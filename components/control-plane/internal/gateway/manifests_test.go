@@ -23,7 +23,7 @@ func TestApplyCredentialDriverToml_KubernetesSecrets(t *testing.T) {
 		KubernetesSecrets: &KubernetesSecretsConfig{Namespace: "cred-ns"},
 	}
 
-	result := applyCredentialDriverToml(lines, driver)
+	result := applyCredentialDriverToml(lines, driver, "tenant-ns")
 	joined := strings.Join(result, "\n")
 
 	if strings.Contains(joined, "[openshell.gateway.credential_storage]") {
@@ -63,7 +63,7 @@ func TestApplyCredentialDriverToml_Vault(t *testing.T) {
 		},
 	}
 
-	result := applyCredentialDriverToml(lines, driver)
+	result := applyCredentialDriverToml(lines, driver, "tenant-ns")
 	joined := strings.Join(result, "\n")
 
 	if strings.Contains(joined, "[openshell.gateway.credential_storage]") {
@@ -99,11 +99,14 @@ func TestApplyCredentialDriverToml_NoCredentialStorageSection(t *testing.T) {
 		Type: "kubernetes-secrets",
 	}
 
-	result := applyCredentialDriverToml(lines, driver)
+	result := applyCredentialDriverToml(lines, driver, "tenant-ns")
 	joined := strings.Join(result, "\n")
 
 	if !strings.Contains(joined, `credential_drivers = ["kubernetes-secrets"]`) {
 		t.Error("expected kubernetes-secrets driver declaration even without existing credential_storage section")
+	}
+	if !strings.Contains(joined, `namespace = "tenant-ns"`) {
+		t.Error("expected tenant namespace to be used as default")
 	}
 	if !strings.Contains(joined, "[openshell.gateway]") {
 		t.Error("expected original content preserved")
