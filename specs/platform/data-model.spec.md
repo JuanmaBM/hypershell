@@ -12,6 +12,7 @@ The HyperShell API server provides a control plane for deploying and managing di
 - **ManagedDatabase** - a database instance provisioned for a fleet. Tracks provider, region, engine type/version, instance class, and a connection secret reference.
 - **GatewayRelease** - a versioned container image for gateway deployments within a fleet. Supports rollout strategies with canary percent/duration controls.
 - **Gateway** - an API gateway instance deployed onto a specific cluster, using a specific release and database, within an API-assigned namespace. Tracks TLS mode, service type, external DNS, and lifecycle phase.
+- **ManagedLoadBalancer** - a shared cloud load balancer provisioned on a cluster within a fleet. Multiple Gateways route through a single load balancer via GRPCRoutes, avoiding per-gateway load balancer provisioning. See [`managed-loadbalancer.spec.md`](./managed-loadbalancer.spec.md).
 - **GatewayNetwork** - defines network connectivity topology between gateways in a fleet. Supports tunnel modes and designates a hub gateway for hub-and-spoke or mesh networking.
 
 ## Entity Relationship Diagram
@@ -80,6 +81,7 @@ erDiagram
         string cluster_id FK
         string release_id FK
         string database_id FK
+        string load_balancer_id FK
         string namespace
         string image
         string[] server_dns_names
@@ -93,6 +95,20 @@ erDiagram
         string service_type
         string status
         string phase
+        time created_at
+        time updated_at
+        time deleted_at
+    }
+
+    ManagedLoadBalancer {
+        string ID PK
+        string name
+        string fleet_id FK
+        string cluster_id FK
+        string provider
+        string load_balancer_type
+        string hostname
+        string status
         time created_at
         time updated_at
         time deleted_at
@@ -113,13 +129,16 @@ erDiagram
 
     Fleet ||--o{ ManagedCluster : "owns"
     Fleet ||--o{ ManagedDatabase : "owns"
+    Fleet ||--o{ ManagedLoadBalancer : "owns"
     Fleet ||--o{ GatewayRelease : "owns"
     Fleet ||--o{ Gateway : "owns"
     Fleet ||--o{ GatewayNetwork : "owns"
 
     ManagedCluster ||--o{ Gateway : "hosts"
+    ManagedCluster ||--o{ ManagedLoadBalancer : "hosts"
     GatewayRelease ||--o{ Gateway : "deployed_as"
     ManagedDatabase ||--o{ Gateway : "backed_by"
+    ManagedLoadBalancer ||--o{ Gateway : "routes_through"
     Gateway ||--o| GatewayNetwork : "hub_gateway"
 ```
 
@@ -137,7 +156,7 @@ The system SHALL support creating, reading, updating, and deleting Fleets. A Fle
 
 ### Requirement: Fleet-Scoped Resources
 
-All resources (ManagedCluster, ManagedDatabase, GatewayRelease, Gateway, GatewayNetwork) SHALL belong to exactly one Fleet via `fleet_id`.
+All resources (ManagedCluster, ManagedDatabase, ManagedLoadBalancer, GatewayRelease, Gateway, GatewayNetwork) SHALL belong to exactly one Fleet via `fleet_id`.
 
 #### Scenario: Create Gateway with Fleet Reference
 - GIVEN a valid fleet_id, cluster_id, release_id, and database_id
@@ -180,6 +199,7 @@ A Gateway SHALL include provisioning configuration fields that the control plane
 | `route_address` | text | Read-only external address populated by the control plane (e.g., `grpcs://hostname:443`) |
 | `database` | JSONB | Database backend config: `{storageSize, image, externalSecretRef}` |
 | `credential_driver` | JSONB | Credential storage driver config: `{type, kubernetes_secrets, vault}`. See [`openshell-gateway-credentials.spec.md`](./openshell-gateway-credentials.spec.md) |
+| `load_balancer_id` | string (FK) | Optional reference to a ManagedLoadBalancer. When set, the gateway shares the referenced load balancer. See [`managed-loadbalancer.spec.md`](./managed-loadbalancer.spec.md) |
 
 See [`openshell-gateway.spec.md`](./openshell-gateway.spec.md) and its sub-specs for full provisioning details.
 
@@ -230,6 +250,8 @@ All routes under `/api/hypershell/v1/`:
 | GET/PATCH/DELETE | `/managed_clusters/{id}` | Get/Update/Delete |
 | GET/POST | `/managed_databases` | List/Create |
 | GET/PATCH/DELETE | `/managed_databases/{id}` | Get/Update/Delete |
+| GET/POST | `/managed_load_balancers` | List/Create |
+| GET/PATCH/DELETE | `/managed_load_balancers/{id}` | Get/Update/Delete |
 
 ## Design Decisions
 
@@ -240,3 +262,4 @@ All routes under `/api/hypershell/v1/`:
 | Separate Release from Gateway | Decouples versioning from deployment; enables canary and rollback |
 | GatewayNetwork as explicit entity | Makes network topology declarative and auditable |
 | Secret references (not inline secrets) | Keeps secrets in K8s Secrets, not in the database |
+| ManagedLoadBalancer as shared resource | Cloud load balancers consume scarce subnet IPs (8+ per ELB). Sharing one LB across many gateways via GRPCRoutes avoids IP exhaustion. Same pattern as ManagedDatabase for shared postgres |
