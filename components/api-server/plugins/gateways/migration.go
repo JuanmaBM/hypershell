@@ -68,7 +68,7 @@ func migrationAddCredentialDriver() *gormigrate.Migration {
 	}
 
 	return &gormigrate.Migration{
-		ID: "2026081112000001",
+		ID: "2026081112000005",
 		Migrate: func(tx *gorm.DB) error {
 			return tx.AutoMigrate(&Gateway{})
 		},
