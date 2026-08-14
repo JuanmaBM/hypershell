@@ -14,6 +14,16 @@ This specification introduces `ManagedLoadBalancer` as a fleet-scoped managed re
 
 This is analogous to ROSA, where a cluster is created in a VPC that must have enough IPs. Here, a Gateway is assigned to a `ManagedLoadBalancer` that must have capacity in its subnet.
 
+### Cloud Drivers
+
+Load balancer provisioning requires direct interaction with cloud provider APIs — not just creating Kubernetes resources. Each cloud has its own load balancer types, networking primitives, and constraints:
+
+- **AWS**: ELB/NLB provisioning via the AWS API, subnet selection, security groups
+- **IBM Cloud**: IBM Load Balancer provisioning via the IBM Cloud API
+- **GCP/Azure**: Future cloud-specific provisioning
+
+The control-plane reconciler SHALL delegate load balancer lifecycle operations to a **cloud driver** interface. This abstraction is critical for the planned gateway/sandbox cluster split, where networking between clusters (VPCs, private links, peering) must go through cloud APIs rather than intra-cluster Kubernetes resources.
+
 ---
 
 ## Requirements
@@ -28,9 +38,9 @@ The API server SHALL support a `ManagedLoadBalancer` kind as a fleet-scoped reso
 | `name` | string | Yes | Human-readable name |
 | `fleet_id` | string (FK) | Yes | Owning Fleet |
 | `cluster_id` | string (FK) | Yes | ManagedCluster where the load balancer is provisioned |
-| `provider` | string | Yes | Cloud provider: `aws`, `gcp`, `azure` |
-| `load_balancer_type` | string | No | Load balancer type: `classic`, `nlb`, `application`. Default: `classic` |
-| `hostname` | string | Read-only | DNS hostname of the provisioned load balancer, populated by the control-plane reconciler |
+| `provider` | string | Yes | Cloud provider: `aws`, `ibm`, `gcp`, `azure` |
+| `load_balancer_type` | string | No | Load balancer type (provider-specific): `classic`, `nlb`, `application` (AWS); `public`, `private` (IBM). Default: provider-dependent |
+| `hostname` | string | Read-only | DNS hostname of the provisioned load balancer, populated by the cloud driver |
 | `status` | string | Read-only | Operational status: `Pending`, `Provisioning`, `Ready`, `Error` |
 
 #### Scenario: Create ManagedLoadBalancer
@@ -84,9 +94,26 @@ When `load_balancer_id` is absent or empty, the existing per-gateway load balanc
 
 ### Requirement: ManagedLoadBalancer Reconciliation
 
-The control-plane reconciler SHALL reconcile a `ManagedLoadBalancer` into a Kubernetes Gateway API `Gateway` resource with a wildcard HTTPS listener that accepts `GRPCRoute` resources from all tenant namespaces.
+The control-plane reconciler SHALL reconcile a `ManagedLoadBalancer` by delegating to the appropriate **cloud driver** for the resource's `provider` field. The cloud driver is responsible for provisioning the actual cloud load balancer and, where applicable, the corresponding Kubernetes Gateway API resources.
 
-The reconciled Gateway API `Gateway` SHALL have:
+#### Cloud Driver Interface
+
+The reconciler SHALL use a cloud driver abstraction with the following responsibilities:
+
+| Operation | Description |
+|-----------|-------------|
+| `Provision` | Create the cloud load balancer (e.g., AWS ELB via AWS API, IBM LB via IBM Cloud API) and the Kubernetes Gateway API `Gateway` resource |
+| `Status` | Read the load balancer's health, hostname, and readiness from the cloud provider |
+| `Delete` | Tear down the cloud load balancer and associated Kubernetes resources |
+| `ConfigureNetworking` | Set up cloud networking (security groups, VPC peering, private links) required for the load balancer to accept traffic |
+
+> **Phase 1 (current):** The AWS cloud driver provisions via Kubernetes Gateway API resources on OpenShift, which triggers the cloud controller to create ELBs. This is an indirect path through the cluster's cloud integration.
+>
+> **Phase 2 (cloud drivers):** Cloud drivers provision load balancers directly via cloud APIs (AWS SDK, IBM Cloud SDK), giving full control over subnet selection, security groups, and networking topology. This is required for the gateway/sandbox cluster split, where load balancers and gateways may live on different clusters connected via private links or VPC peering.
+
+#### Kubernetes Gateway API Resource
+
+When the cloud driver provisions a load balancer, it SHALL also ensure a Kubernetes Gateway API `Gateway` resource exists with:
 
 - `gatewayClassName`: the cluster's default Gateway class (e.g., `openshift-default`)
 - A single listener named `grpc` on port 443 with protocol `HTTPS` and TLS termination
@@ -96,17 +123,17 @@ The reconciled Gateway API `Gateway` SHALL have:
 #### Scenario: Load Balancer Becomes Ready
 
 - GIVEN a ManagedLoadBalancer in status `Pending`
-- WHEN the reconciler creates the Gateway API `Gateway` and the cloud provider provisions the load balancer
-- THEN the reconciler SHALL read the load balancer address from the Gateway status
+- WHEN the cloud driver provisions the load balancer and it becomes healthy
+- THEN the reconciler SHALL read the load balancer address from the cloud driver
 - AND update the ManagedLoadBalancer's `hostname` field
 - AND set the status to `Ready`
 
 #### Scenario: Load Balancer Provisioning Failure
 
 - GIVEN a ManagedLoadBalancer in status `Pending`
-- WHEN the cloud provider cannot provision the load balancer (e.g., subnet IP exhaustion)
+- WHEN the cloud driver cannot provision the load balancer (e.g., subnet IP exhaustion, API quota)
 - THEN the status SHALL transition to `Error`
-- AND the reconciler SHALL log the failure reason
+- AND the reconciler SHALL log the failure reason from the cloud driver
 
 ---
 
@@ -137,14 +164,14 @@ Standard query parameters SHALL apply to the list endpoint: `page`, `size`, `sea
 
 ### Requirement: ManagedLoadBalancer Deletion Cleanup
 
-When a `ManagedLoadBalancer` is deleted (after all Gateway references are removed), the control-plane reconciler SHALL clean up the associated Kubernetes Gateway API `Gateway` resource and its LoadBalancer Service, releasing the cloud load balancer and its IP addresses.
+When a `ManagedLoadBalancer` is deleted (after all Gateway references are removed), the control-plane reconciler SHALL invoke the cloud driver to tear down the cloud load balancer and clean up associated Kubernetes resources.
 
 #### Scenario: Clean Deletion
 
 - GIVEN a ManagedLoadBalancer with no Gateways referencing it
 - WHEN the ManagedLoadBalancer is deleted
-- THEN the reconciler SHALL delete the Gateway API `Gateway` resource from the cluster
-- AND the cloud load balancer and its IP addresses SHALL be released
+- THEN the cloud driver SHALL delete the cloud load balancer and release its IP addresses
+- AND the reconciler SHALL delete the Kubernetes Gateway API `Gateway` resource from the cluster
 
 ---
 
@@ -182,11 +209,15 @@ erDiagram
 | Optional FK on Gateway | Backward compatibility. Existing gateways without `load_balancer_id` continue to provision per-tenant load balancers. Migration is gradual |
 | Wildcard listener on shared Gateway | A single listener with `*.apps.example.com` hostname and `allowedRoutes.namespaces.from: All` allows any tenant's GRPCRoute to attach without reconfiguring the Gateway resource |
 | Reject deletion with active references | Prevents orphaned GRPCRoutes pointing to a non-existent load balancer. Same pattern as preventing Fleet deletion with active resources |
-| `hostname` as read-only field | Populated by the reconciler from the cloud provider, not user-settable. Same pattern as `route_address` on Gateway |
+| `hostname` as read-only field | Populated by the cloud driver from the cloud provider, not user-settable. Same pattern as `route_address` on Gateway |
+| Cloud driver abstraction | Load balancer provisioning requires cloud-specific API calls (AWS SDK, IBM Cloud SDK). A driver interface decouples the reconciler from provider details and enables multi-cloud support |
+| Phased cloud driver adoption | Phase 1 uses Kubernetes Gateway API as an indirect path (cloud controller creates ELBs). Phase 2 provisions directly via cloud APIs, required for gateway/sandbox cluster split where networking crosses cluster boundaries |
 
 ---
 
-## Migration from GATEWAY_API_GATEWAY_NAME
+## Migration Path
+
+### Phase 1: From GATEWAY_API_GATEWAY_NAME to ManagedLoadBalancer
 
 The control-plane currently supports a global `GATEWAY_API_GATEWAY_NAME` environment variable that switches all gateways to shared mode. This env var is an interim mechanism. Once `ManagedLoadBalancer` is implemented:
 
@@ -195,6 +226,15 @@ The control-plane currently supports a global `GATEWAY_API_GATEWAY_NAME` environ
 3. Remove the `GATEWAY_API_GATEWAY_NAME` env var
 
 The per-gateway `load_balancer_id` FK provides finer control than the global env var — different gateways on the same cluster can use different load balancers if needed.
+
+### Phase 2: Cloud Drivers
+
+Once the ManagedLoadBalancer API is stable, replace the indirect Kubernetes-based provisioning with direct cloud API calls:
+
+1. Implement AWS cloud driver (ELB/NLB provisioning via AWS SDK)
+2. Implement IBM Cloud driver (IBM LB provisioning via IBM Cloud SDK)
+3. Add cloud networking support (VPC peering, private links, security groups)
+4. Enable gateway/sandbox cluster split — load balancers on gateway clusters, workloads on sandbox clusters, connected via cloud networking
 
 ---
 

@@ -262,4 +262,4 @@ All routes under `/api/hypershell/v1/`:
 | Separate Release from Gateway | Decouples versioning from deployment; enables canary and rollback |
 | GatewayNetwork as explicit entity | Makes network topology declarative and auditable |
 | Secret references (not inline secrets) | Keeps secrets in K8s Secrets, not in the database |
-| ManagedLoadBalancer as shared resource | Cloud load balancers consume scarce subnet IPs (8+ per ELB). Sharing one LB across many gateways via GRPCRoutes avoids IP exhaustion. Same pattern as ManagedDatabase for shared postgres |
+| ManagedLoadBalancer as shared resource | Cloud load balancers consume scarce subnet IPs (8+ per ELB). Sharing one LB across many gateways via GRPCRoutes avoids IP exhaustion. Provisioned via cloud drivers (AWS SDK, IBM Cloud SDK) to enable multi-cloud support and gateway/sandbox cluster split |
