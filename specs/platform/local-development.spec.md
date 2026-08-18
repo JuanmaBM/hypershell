@@ -678,6 +678,8 @@ All `kind-*` targets operate on the namespace specified by `KIND_NAMESPACE` (def
 | `CERT_MANAGER_VERSION` | `v1.21.1` | cert-manager release version |
 | `KIND_DB_IMAGE` | `registry.access.redhat.com/hi/postgresql:18` | Database image for Gateway resource; override for OSS dev (unsupported) |
 | `KIND_NAMESPACE` | `hypershell-system` | Target namespace for all `kind-*` targets |
+| `KIND_JAEGER` | (unset — no Jaeger) | Set to `true` to deploy Jaeger all-in-one and enable API server OTel tracing (see `api-server-observability.spec.md`) |
+| `JAEGER_VERSION` | `2.6` | Jaeger all-in-one image tag; pinned for reproducibility |
 
 ## Make Targets Summary
 

@@ -253,6 +253,22 @@ if [[ -z "${KIND_KEYCLOAK_URL:-}" ]]; then
   success "Keycloak ready"
 fi
 
+# --- Jaeger (optional, for OTel trace inspection) ---
+if [[ "${KIND_JAEGER:-}" == "true" ]]; then
+  header "Jaeger"
+  JAEGER_VERSION="${JAEGER_VERSION:-2.6}"
+  info "Deploying Jaeger ${JAEGER_VERSION}..."
+  sed "s|jaegertracing/jaeger:latest|jaegertracing/jaeger:${JAEGER_VERSION}|" \
+    deploy/kind/jaeger.yaml | kube apply -f -
+  info "Patching API server with OTEL_EXPORTER_OTLP_ENDPOINT..."
+  kube set env deployment/hypershell-api-server -n "${KIND_NAMESPACE}" \
+    OTEL_EXPORTER_OTLP_ENDPOINT="http://jaeger.${KIND_NAMESPACE}.svc.cluster.local:4317"
+  info "Waiting for Jaeger..."
+  kube wait --for=condition=available deployment/jaeger -n "${KIND_NAMESPACE}" --timeout=120s
+  success "Jaeger ready"
+  echo ""
+fi
+
 # --- Gateway trusted CA (self-signed CA for OIDC over HTTPS) ---
 # The gateway pod validates OIDC tokens against the canonical HTTPS issuer
 # (https://keycloak.hypershell.localhost). That endpoint is served by the
@@ -701,6 +717,10 @@ if [[ "${CPK_RUNNING}" == "true" ]]; then
     info "Keycloak:     ${KIND_KEYCLOAK_URL}"
   fi
 
+  if [[ "${KIND_JAEGER:-}" == "true" ]]; then
+    info "Jaeger UI:    https://jaeger.hypershell.localhost${PORT_SUFFIX}"
+  fi
+
   info "Login:        https://${CONSOLE_HOSTNAME}${PORT_SUFFIX}/auth/login"
   info "Test users:   admin/admin (admins + users), developer/developer (users only)"
 else
@@ -712,6 +732,10 @@ else
     info "Keycloak:     http://localhost:8080 (admin/admin)"
   else
     info "Keycloak:     ${KIND_KEYCLOAK_URL}"
+  fi
+
+  if [[ "${KIND_JAEGER:-}" == "true" ]]; then
+    info "Jaeger UI:    http://localhost:16686"
   fi
 
   info "Login:        http://localhost:3000/auth/login"

@@ -45,6 +45,7 @@ Machine-readable index for autonomous reconciliation (`/reconcile` skill).
 | `standards/security/security.spec.md` | standards | - | ALL | - |
 | `platform/local-development.spec.md` | platform | Kind cluster, images, Make targets | ALL | cross-cutting, security |
 | `platform/oidc-integration.spec.md` | platform | API JWT validation, BFF OIDC session, IdP client config, Kind opt-in | API, WEB, CP | local-development, openshell-gateway-oidc, web-console/architecture |
+| `platform/api-server-observability.spec.md` | platform | OTel SDK, HTTP/gRPC tracing, request metrics, Jaeger dev instance | API | local-development, cross-cutting, security |
 | `platform/e2e-testing.spec.md` | platform | Infra drivers, e2e test suite, CI workflow, deploy overlays | ALL | local-development, control-plane, openshell-gateway-routing |
 | `standards/ui/foundations.spec.md` | standards | UI foundations | WEB | - |
 | `standards/ui/brand-color.spec.md` | standards | Red Hat brand color | WEB | foundations, accessibility |
