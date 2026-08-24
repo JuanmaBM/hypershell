@@ -1,6 +1,7 @@
 package otel
 
 import (
+	"context"
 	"testing"
 )
 
@@ -46,3 +47,52 @@ func TestSanitizeError(t *testing.T) {
 type errWith string
 
 func (e errWith) Error() string { return string(e) }
+
+func TestStartReconcileSpanDisabled(t *testing.T) {
+	prev := enabled
+	enabled = false
+	defer func() { enabled = prev }()
+
+	ctx := context.Background()
+	ctx2, end := StartReconcileSpan(ctx, "Fleet", "reconcile")
+	end(nil)
+
+	if ctx2 != ctx {
+		t.Error("disabled StartReconcileSpan should return the same context")
+	}
+}
+
+func TestStartWatchSpanDisabled(t *testing.T) {
+	prev := enabled
+	enabled = false
+	defer func() { enabled = prev }()
+
+	ctx := context.Background()
+	ctx2, end := StartWatchSpan(ctx, "Fleet")
+	end(nil)
+
+	if ctx2 != ctx {
+		t.Error("disabled StartWatchSpan should return the same context")
+	}
+}
+
+func TestGRPCDialOptionsDisabled(t *testing.T) {
+	prev := enabled
+	enabled = false
+	defer func() { enabled = prev }()
+
+	opts := GRPCDialOptions()
+	if opts != nil {
+		t.Error("disabled GRPCDialOptions should return nil")
+	}
+}
+
+func TestInstrumentK8sConfigDisabled(t *testing.T) {
+	prev := enabled
+	enabled = false
+	defer func() { enabled = prev }()
+
+	if InstrumentK8sConfig(nil) != nil {
+		t.Error("disabled InstrumentK8sConfig(nil) should return nil")
+	}
+}

@@ -274,7 +274,9 @@ func (r *SandboxCountReconciler) selfHeal(ctx context.Context, lister corelister
 		return
 	}
 	for _, ns := range namespaces {
-		r.healNamespace(ctx, lister, ns)
+		if err := r.healNamespace(ctx, lister, ns); err != nil {
+			tickErr = err
+		}
 	}
 }
 
@@ -284,20 +286,22 @@ func (r *SandboxCountReconciler) selfHeal(ctx context.Context, lister corelister
 // lock, so an event-driven delta for the same gateway cannot interleave between
 // the read and the write, and the control plane never issues two overlapping
 // count RPCs for one gateway.
-func (r *SandboxCountReconciler) healNamespace(ctx context.Context, lister corelisters.PodLister, namespace string) {
+func (r *SandboxCountReconciler) healNamespace(ctx context.Context, lister corelisters.PodLister, namespace string) error {
 	unlock := r.lockNamespace(namespace)
 	defer unlock()
 
 	count, err := countActiveSandboxes(lister, namespace)
 	if err != nil {
 		log.Printf("WARN sandbox count: read cache for %s: %v", namespace, err)
-		return
+		return err
 	}
 	rpcCtx, cancel := context.WithTimeout(ctx, sandboxCountRPCTimeout)
 	defer cancel()
 	if err := r.set(rpcCtx, namespace, count); err != nil {
 		log.Printf("WARN sandbox count: set %s to %d: %v", namespace, count, err)
+		return err
 	}
+	return nil
 }
 
 // countActiveSandboxes tallies the active sandbox pods a namespace holds in the

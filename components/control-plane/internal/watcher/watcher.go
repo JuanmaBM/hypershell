@@ -9,10 +9,6 @@ import (
 
 	pb "github.com/openshift-online/hypershell/components/api-server/pkg/api/grpc/hypershell/v1"
 	cpotel "github.com/openshift-online/hypershell/components/control-plane/internal/otel"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	otelcodes "go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -734,7 +730,6 @@ func WatchRoleBindings(ctx context.Context, conn *grpc.ClientConn, handler Handl
 func watchLoop(ctx context.Context, kind string, connectAndRecv func(ctx context.Context) error) error {
 	backoff := time.Second
 	maxBackoff := 30 * time.Second
-	tracer := otel.Tracer(cpotel.TracerName)
 	reconnected := false
 
 	for {
@@ -754,9 +749,7 @@ func watchLoop(ctx context.Context, kind string, connectAndRecv func(ctx context
 		// survive the reconnect.
 		attemptCtx, cancel := context.WithCancel(ctx)
 
-		streamCtx, span := tracer.Start(attemptCtx, "watch "+kind, trace.WithAttributes(
-			attribute.String("resource.kind", kind),
-		))
+		streamCtx, endSpan := cpotel.StartWatchSpan(attemptCtx, kind)
 
 		if reconnected {
 			cpotel.RecordWatchReconnect(ctx, kind)
@@ -765,18 +758,11 @@ func watchLoop(ctx context.Context, kind string, connectAndRecv func(ctx context
 		err := connectAndRecv(streamCtx)
 		cancel()
 		if ctx.Err() != nil {
-			span.SetStatus(otelcodes.Ok, "")
-			span.End()
+			endSpan(nil)
 			return ctx.Err()
 		}
 
-		if err != nil {
-			span.SetStatus(otelcodes.Error, err.Error())
-			span.RecordError(err)
-		} else {
-			span.SetStatus(otelcodes.Ok, "")
-		}
-		span.End()
+		endSpan(err)
 
 		reconnected = true
 		log.Printf("WARN %s watch stream disconnected: %v; reconnecting in %v", kind, err, backoff)

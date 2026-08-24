@@ -1,6 +1,9 @@
 package otel
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCanonicalizePath(t *testing.T) {
 	tests := []struct {
@@ -53,6 +56,41 @@ func TestCanonicalizePath(t *testing.T) {
 			"/apis/rbac.authorization.k8s.io/v1/clusterroles/admin",
 			"/apis/rbac.authorization.k8s.io/v1/clusterroles/{name}",
 		},
+		{
+			"httproute",
+			"/apis/gateway.networking.k8s.io/v1/namespaces/ns/httproutes/my-route",
+			"/apis/gateway.networking.k8s.io/v1/namespaces/{name}/httproutes/{name}",
+		},
+		{
+			"grpcroute",
+			"/apis/gateway.networking.k8s.io/v1/namespaces/ns/grpcroutes/my-grpc",
+			"/apis/gateway.networking.k8s.io/v1/namespaces/{name}/grpcroutes/{name}",
+		},
+		{
+			"backendtlspolicy",
+			"/apis/gateway.networking.k8s.io/v1alpha3/namespaces/ns/backendtlspolicies/tls-pol",
+			"/apis/gateway.networking.k8s.io/v1alpha3/namespaces/{name}/backendtlspolicies/{name}",
+		},
+		{
+			"openshift route",
+			"/apis/route.openshift.io/v1/namespaces/ns/routes/gw-route",
+			"/apis/route.openshift.io/v1/namespaces/{name}/routes/{name}",
+		},
+		{
+			"cnpg cluster",
+			"/apis/postgresql.cnpg.io/v1/namespaces/ns/clusters/openshell-db",
+			"/apis/postgresql.cnpg.io/v1/namespaces/{name}/clusters/{name}",
+		},
+		{
+			"cert-manager certificate",
+			"/apis/cert-manager.io/v1/namespaces/ns/certificates/my-cert",
+			"/apis/cert-manager.io/v1/namespaces/{name}/certificates/{name}",
+		},
+		{
+			"cert-manager issuer",
+			"/apis/cert-manager.io/v1/namespaces/ns/issuers/my-issuer",
+			"/apis/cert-manager.io/v1/namespaces/{name}/issuers/{name}",
+		},
 	}
 
 	for _, tt := range tests {
@@ -62,5 +100,34 @@ func TestCanonicalizePath(t *testing.T) {
 				t.Errorf("canonicalizePath(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCanonicalizePathNoIdentifierLeak(t *testing.T) {
+	seeded := []struct {
+		path       string
+		identifiers []string
+	}{
+		{
+			"/api/v1/namespaces/openshell-abc123/secrets/db-password",
+			[]string{"openshell-abc123", "db-password"},
+		},
+		{
+			"/apis/gateway.networking.k8s.io/v1/namespaces/my-ns/httproutes/my-route",
+			[]string{"my-ns", "my-route"},
+		},
+		{
+			"/apis/postgresql.cnpg.io/v1/namespaces/db-ns/clusters/openshell-db",
+			[]string{"db-ns", "openshell-db"},
+		},
+	}
+
+	for _, tt := range seeded {
+		canonical := canonicalizePath(tt.path)
+		for _, id := range tt.identifiers {
+			if strings.Contains(canonical, id) {
+				t.Errorf("canonicalizePath(%q) = %q still contains identifier %q", tt.path, canonical, id)
+			}
+		}
 	}
 }
