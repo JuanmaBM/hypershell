@@ -58,7 +58,7 @@ func StartWatchSpan(ctx context.Context, kind string) (context.Context, func(err
 		attribute.String("resource.kind", kind),
 	))
 	// Watch errors are gRPC transport-level (connection reset, EOF) and never
-	// carry user data, so RecordError is safe here without sanitization —
+	// carry user data, so RecordError is safe here without sanitization --
 	// unlike reconcile errors which may contain namespace/secret references.
 	return ctx, func(err error) {
 		if err != nil {
