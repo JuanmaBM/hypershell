@@ -105,7 +105,7 @@ func TestCanonicalizePath(t *testing.T) {
 
 func TestCanonicalizePathNoIdentifierLeak(t *testing.T) {
 	seeded := []struct {
-		path       string
+		path        string
 		identifiers []string
 	}{
 		{
