@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -275,7 +276,7 @@ func (r *SandboxCountReconciler) selfHeal(ctx context.Context, lister corelister
 	}
 	for _, ns := range namespaces {
 		if err := r.healNamespace(ctx, lister, ns); err != nil {
-			tickErr = err
+			tickErr = errors.Join(tickErr, err)
 		}
 	}
 }

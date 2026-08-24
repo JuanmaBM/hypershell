@@ -43,8 +43,8 @@ func (t *k8sTracingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	ctx, span := tracer.Start(req.Context(), spanName,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
-			attribute.String("http.method", req.Method),
-			attribute.String("http.url.template", canonical),
+			attribute.String("http.request.method", req.Method),
+			attribute.String("url.template", canonical),
 		),
 	)
 	defer span.End()
@@ -55,7 +55,7 @@ func (t *k8sTracingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		span.RecordError(err)
 		return resp, err
 	}
-	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
+	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
 	if resp.StatusCode >= 400 {
 		span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", resp.StatusCode))
 	}
@@ -68,7 +68,8 @@ func (t *k8sTracingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 // namespace names or secret references (CP-OBS-06).
 //
 // The list covers every resource type the control plane reconciles, including
-// Gateway API and cert-manager CRDs.
+// Gateway API and cert-manager CRDs. When adding a new resource type to
+// the reconciler, add its plural name here to keep concrete names out of spans.
 var k8sPathSegments = regexp.MustCompile(
 	`(/namespaces/)[^/]+` +
 		`|(/secrets/)[^/]+` +

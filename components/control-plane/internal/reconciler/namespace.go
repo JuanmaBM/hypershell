@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -134,7 +135,7 @@ func (r *NamespaceGCReconciler) reconcileOnce(ctx context.Context) {
 	for i := range namespaces.Items {
 		ns := &namespaces.Items[i]
 		if err := r.reconcileNamespace(ctx, ns, live); err != nil {
-			tickErr = err
+			tickErr = errors.Join(tickErr, err)
 			log.Printf("WARN namespace gc: %s: %v", ns.Name, err)
 		}
 	}
