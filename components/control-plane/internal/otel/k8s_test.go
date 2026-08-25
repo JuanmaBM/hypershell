@@ -91,6 +91,46 @@ func TestCanonicalizePath(t *testing.T) {
 			"/apis/cert-manager.io/v1/namespaces/ns/issuers/my-issuer",
 			"/apis/cert-manager.io/v1/namespaces/{name}/issuers/{name}",
 		},
+		{
+			"gateway resource (previously missing from allowlist)",
+			"/apis/gateway.networking.k8s.io/v1/namespaces/ns/gateways/my-gw",
+			"/apis/gateway.networking.k8s.io/v1/namespaces/{name}/gateways/{name}",
+		},
+		{
+			"persistentvolumeclaim (previously missing from allowlist)",
+			"/api/v1/namespaces/ns/persistentvolumeclaims/data-vol",
+			"/api/v1/namespaces/{name}/persistentvolumeclaims/{name}",
+		},
+		{
+			"cnpg database (previously missing from allowlist)",
+			"/apis/postgresql.cnpg.io/v1/namespaces/ns/databases/app-db",
+			"/apis/postgresql.cnpg.io/v1/namespaces/{name}/databases/{name}",
+		},
+		{
+			"cnpg databaserole (previously missing from allowlist)",
+			"/apis/postgresql.cnpg.io/v1/namespaces/ns/databaseroles/reader",
+			"/apis/postgresql.cnpg.io/v1/namespaces/{name}/databaseroles/{name}",
+		},
+		{
+			"cluster-scoped named resource",
+			"/api/v1/nodes/worker-01",
+			"/api/v1/nodes/{name}",
+		},
+		{
+			"subresource path",
+			"/api/v1/namespaces/ns/pods/my-pod/log",
+			"/api/v1/namespaces/{name}/pods/{name}/log",
+		},
+		{
+			"non-api path passthrough",
+			"/healthz",
+			"/healthz",
+		},
+		{
+			"empty path passthrough",
+			"/",
+			"/",
+		},
 	}
 
 	for _, tt := range tests {
@@ -119,6 +159,14 @@ func TestCanonicalizePathNoIdentifierLeak(t *testing.T) {
 		{
 			"/apis/postgresql.cnpg.io/v1/namespaces/db-ns/clusters/openshell-db",
 			[]string{"db-ns", "openshell-db"},
+		},
+		{
+			"/apis/gateway.networking.k8s.io/v1/namespaces/prod/gateways/main-gw",
+			[]string{"prod", "main-gw"},
+		},
+		{
+			"/api/v1/namespaces/tenant-42/persistentvolumeclaims/data-vol-0",
+			[]string{"tenant-42", "data-vol-0"},
 		},
 	}
 

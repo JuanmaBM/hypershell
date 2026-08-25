@@ -3,7 +3,7 @@ package otel
 import (
 	"fmt"
 	"net/http"
-	"regexp"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -62,45 +62,54 @@ func (t *k8sTracingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return resp, nil
 }
 
-// k8sPathSegments matches path segments that are concrete resource names or
-// namespace names in Kubernetes API paths and replaces them with bounded
-// placeholders, keeping span cardinality low and avoiding exporting
-// namespace names or secret references (CP-OBS-06).
+// canonicalizePath parses Kubernetes API path structure generically and
+// replaces concrete namespace and resource name segments with {name},
+// independent of resource kind. This avoids maintaining a per-resource
+// allowlist and ensures new resource types are canonicalized automatically.
 //
-// The list covers every resource type the control plane reconciles, including
-// Gateway API and cert-manager CRDs. When adding a new resource type to
-// the reconciler, add its plural name here to keep concrete names out of spans.
-var k8sPathSegments = regexp.MustCompile(
-	`(/namespaces/)[^/]+` +
-		`|(/secrets/)[^/]+` +
-		`|(/configmaps/)[^/]+` +
-		`|(/deployments/)[^/]+` +
-		`|(/services/)[^/]+` +
-		`|(/serviceaccounts/)[^/]+` +
-		`|(/pods/)[^/]+` +
-		`|(/statefulsets/)[^/]+` +
-		`|(/jobs/)[^/]+` +
-		`|(/networkpolicies/)[^/]+` +
-		`|(/roles/)[^/]+` +
-		`|(/rolebindings/)[^/]+` +
-		`|(/clusterroles/)[^/]+` +
-		`|(/clusterrolebindings/)[^/]+` +
-		`|(/httproutes/)[^/]+` +
-		`|(/grpcroutes/)[^/]+` +
-		`|(/backendtlspolicies/)[^/]+` +
-		`|(/routes/)[^/]+` +
-		`|(/clusters/)[^/]+` +
-		`|(/certificates/)[^/]+` +
-		`|(/issuers/)[^/]+`,
-)
-
+// Kubernetes API paths follow two shapes:
+//
+//	Core:    /api/v1[/namespaces/{ns}]/{resource}[/{name}[/{subresource}]]
+//	Grouped: /apis/{group}/{version}[/namespaces/{ns}]/{resource}[/{name}[/{subresource}]]
 func canonicalizePath(path string) string {
-	return k8sPathSegments.ReplaceAllStringFunc(path, func(match string) string {
-		for i := len(match) - 1; i >= 0; i-- {
-			if match[i] == '/' {
-				return match[:i+1] + "{name}"
-			}
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) < 2 {
+		return path
+	}
+
+	var i int
+	switch parts[0] {
+	case "api":
+		// /api/v1/...
+		i = 2
+	case "apis":
+		// /apis/{group}/{version}/...
+		if len(parts) < 3 {
+			return path
 		}
-		return match
-	})
+		i = 3
+	default:
+		return path
+	}
+
+	// After the API prefix, optionally: namespaces/{ns}
+	if i < len(parts) && parts[i] == "namespaces" {
+		i++
+		if i < len(parts) {
+			parts[i] = "{name}"
+			i++
+		}
+	}
+
+	// Next is the resource type (plural, keep as-is)
+	if i < len(parts) {
+		i++
+	}
+
+	// Next is a concrete resource name (if present, replace)
+	if i < len(parts) {
+		parts[i] = "{name}"
+	}
+
+	return "/" + strings.Join(parts, "/")
 }
