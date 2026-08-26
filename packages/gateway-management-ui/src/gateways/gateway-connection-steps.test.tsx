@@ -82,7 +82,8 @@ describe("GatewayConnectionSteps", () => {
     expect(providerIndex).toBeGreaterThan(installationIndex);
 
     const installationCode = commandBlocks[installationIndex];
-    expect(installationCode?.textContent.split("\n")).toHaveLength(2);
+    expect(installationCode?.textContent).toContain("\\\n");
+    expect(installationCode?.textContent.split("\n")).toHaveLength(9);
     expect(
       installationCode
         ?.closest(".pf-v6-c-code-block")
@@ -105,12 +106,27 @@ describe("GatewayConnectionSteps", () => {
     );
   });
 
-  it("highlights both command blocks with Shiki once they resolve", async () => {
+  it("highlights all command blocks with Shiki", async () => {
     const { container } = renderSteps(readyGateway);
 
     await waitFor(() => {
-      expect(container.querySelectorAll(".shiki").length).toBe(2);
+      expect(container.querySelectorAll(".shiki")).toHaveLength(4);
     });
+
+    const highlightedCommands = Array.from(
+      container.querySelectorAll<HTMLElement>(".shiki"),
+      (block) => block.textContent,
+    );
+    expect(
+      highlightedCommands.some((command) =>
+        command.includes("openshell gateway add"),
+      ),
+    ).toBe(true);
+    expect(
+      highlightedCommands.some((command) =>
+        command.includes("OPENSHELL_GATEWAY_VERSION"),
+      ),
+    ).toBe(true);
   });
 
   it("copies the raw sandbox command, not the highlighted markup", async () => {
@@ -131,7 +147,7 @@ describe("GatewayConnectionSteps", () => {
     const { container } = renderSteps(readyGateway);
 
     await waitFor(() => {
-      expect(container.querySelectorAll(".shiki").length).toBe(2);
+      expect(container.querySelectorAll(".shiki")).toHaveLength(4);
     });
 
     const providerFields = screen.getAllByRole("textbox", {

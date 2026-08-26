@@ -423,10 +423,6 @@
     "defaultMessage": "Loading service account",
     "description": "Status while loading service-account setup metadata."
   },
-  "app.gateway.serviceAccounts.manage": {
-    "defaultMessage": "Create or manage service accounts",
-    "description": "Link from the interactive connection workflow to service-account management."
-  },
   "app.gateway.serviceAccounts.name": {
     "defaultMessage": "Service account name",
     "description": "Label for a service-account name."

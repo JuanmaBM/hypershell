@@ -94,8 +94,15 @@ export function buildOpenShellInstallCommand(
   const endpoint = shellArgument(gateway.endpoint);
 
   return [
-    `OPENSHELL_GATEWAY_VERSION="v$(openshell --gateway-endpoint ${endpoint} status --output json | jq -r '.version')"`,
-    `curl -LsSf ${installScriptUrl} | OPENSHELL_VERSION="$OPENSHELL_GATEWAY_VERSION" sh`,
+    `OPENSHELL_GATEWAY_VERSION="v$(openshell \\`,
+    `  --gateway-endpoint ${endpoint} \\`,
+    "  status \\",
+    "  --output json \\",
+    `  | jq -r '.version')"`,
+    "",
+    "curl -LsSf \\",
+    `  ${installScriptUrl} \\`,
+    `  | OPENSHELL_VERSION="$OPENSHELL_GATEWAY_VERSION" sh`,
   ].join("\n");
 }
 

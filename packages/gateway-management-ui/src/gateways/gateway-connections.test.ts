@@ -53,8 +53,17 @@ describe("gateway connections", () => {
 
   it("builds the version-matched OpenShell installation command", () => {
     expect(buildOpenShellInstallCommand(gateway)).toBe(
-      `OPENSHELL_GATEWAY_VERSION="v$(openshell --gateway-endpoint https://gateway.example.test:443 status --output json | jq -r '.version')"
-curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | OPENSHELL_VERSION="$OPENSHELL_GATEWAY_VERSION" sh`,
+      [
+        `OPENSHELL_GATEWAY_VERSION="v$(openshell \\`,
+        "  --gateway-endpoint https://gateway.example.test:443 \\",
+        "  status \\",
+        "  --output json \\",
+        `  | jq -r '.version')"`,
+        "",
+        "curl -LsSf \\",
+        "  https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh \\",
+        `  | OPENSHELL_VERSION="$OPENSHELL_GATEWAY_VERSION" sh`,
+      ].join("\n"),
     );
   });
 
@@ -65,7 +74,7 @@ curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | 
     });
 
     expect(command).toContain(
-      "--gateway-endpoint 'https://gateway.example.test/a path' status",
+      "--gateway-endpoint 'https://gateway.example.test/a path' \\\n  status",
     );
   });
 

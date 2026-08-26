@@ -1,20 +1,16 @@
 import {
   Alert,
   Button,
-  ClipboardCopyButton,
-  CodeBlock,
-  CodeBlockAction,
-  CodeBlockCode,
   Content,
   Skeleton,
   Title,
 } from "@patternfly/react-core";
 import { ExternalLinkAltIcon } from "@patternfly/react-icons";
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { useIntl } from "react-intl";
 
 import { messages } from "../messages";
-import { EditableCommand } from "./editable-command";
+import { CommandBlock } from "./editable-command";
 import {
   buildGatewayAddCommand,
   buildOpenShellInstallCommand,
@@ -38,47 +34,6 @@ const modelMarker = "OSMODELNAMEZ";
 const sandboxMarker = "OSSANDBOXNAMEZ";
 const setupMarkers = [providerMarker, modelMarker];
 const sandboxMarkers = [sandboxMarker, modelMarker];
-
-function CopyableCommand({
-  command,
-  copyAriaLabel,
-}: {
-  command: string;
-  copyAriaLabel: string;
-}) {
-  const intl = useIntl();
-  const id = useId();
-  const [copied, setCopied] = useState(false);
-
-  return (
-    <CodeBlock
-      actions={
-        <CodeBlockAction>
-          <ClipboardCopyButton
-            aria-label={copyAriaLabel}
-            exitDelay={copied ? 1500 : 600}
-            id={`${id}-copy-button`}
-            maxWidth="110px"
-            onClick={() => {
-              void navigator.clipboard.writeText(command);
-              setCopied(true);
-            }}
-            onTooltipHidden={() => {
-              setCopied(false);
-            }}
-            variant="plain"
-          >
-            {copied
-              ? intl.formatMessage(messages.copied)
-              : intl.formatMessage(messages.copy)}
-          </ClipboardCopyButton>
-        </CodeBlockAction>
-      }
-    >
-      <CodeBlockCode id={id}>{command}</CodeBlockCode>
-    </CodeBlock>
-  );
-}
 
 function ConnectionStep({
   children,
@@ -127,11 +82,11 @@ export function GatewayConnectionSteps({
         title={intl.formatMessage(messages.connectionSetupTitle)}
       >
         {gatewayAddCommand ? (
-          <CopyableCommand
-            command={gatewayAddCommand}
+          <CommandBlock
             copyAriaLabel={intl.formatMessage(messages.copyConnectionCommand, {
               gatewayName: gateway.name,
             })}
+            copyText={gatewayAddCommand}
           />
         ) : (
           <div
@@ -176,15 +131,15 @@ export function GatewayConnectionSteps({
               {intl.formatMessage(messages.connectionInstallPrereq)}
             </Content>
             {installCommand ? (
-              <CopyableCommand
-                command={installCommand}
+              <CommandBlock
                 copyAriaLabel={intl.formatMessage(messages.copyInstallCommand)}
+                copyText={installCommand}
               />
             ) : null}
           </div>
         </Alert>
         {setupTemplate && setupCopy ? (
-          <EditableCommand
+          <CommandBlock
             copyAriaLabel={intl.formatMessage(messages.copySetupCommand)}
             copyText={setupCopy}
             labels={{
@@ -209,7 +164,7 @@ export function GatewayConnectionSteps({
         description={intl.formatMessage(messages.connectionSandboxDescription)}
         title={intl.formatMessage(messages.connectionSandboxTitle)}
       >
-        <EditableCommand
+        <CommandBlock
           copyAriaLabel={intl.formatMessage(messages.copySandboxCommand)}
           copyText={buildSandboxCreateCommand(sandboxName, model)}
           labels={{

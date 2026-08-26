@@ -350,7 +350,7 @@ describe("gateway shell pages", () => {
       commandBlocks.indexOf(providerCommand),
     );
     expect(installationCommand.textContent).toContain(
-      "--gateway-endpoint https://gateway.example.com:443 status",
+      "--gateway-endpoint https://gateway.example.com:443 \\",
     );
     expect(providerCommand.textContent).toContain("--from-gcloud-adc");
     expect(providerCommand.textContent).toContain("openshell inference set");
@@ -471,13 +471,14 @@ describe("gateway shell pages", () => {
       />
     ));
 
+    expect(
+      screen.queryByRole("button", {
+        name: "Create or manage service accounts",
+      }),
+    ).toBeNull();
+
     await user.click(screen.getByRole("tab", { name: "Service accounts" }));
     expect(onTabChange).toHaveBeenCalledWith("service-accounts");
-
-    await user.click(
-      screen.getByRole("button", { name: "Create or manage service accounts" }),
-    );
-    expect(onTabChange).toHaveBeenLastCalledWith("service-accounts");
 
     await user.click(screen.getByRole("tab", { name: "Details" }));
     expect(onTabChange).toHaveBeenCalledWith("details");
@@ -568,8 +569,10 @@ describe("gateway shell pages", () => {
       screen.queryByRole("dialog", { name: "Set up release-bot" }),
     ).toBeNull();
     expect(
-      screen.getByRole("button", { name: "Create or manage service accounts" }),
-    ).toBeTruthy();
+      screen.queryByRole("button", {
+        name: "Create or manage service accounts",
+      }),
+    ).toBeNull();
   });
 
   it("blocks a tab switch while a create request is still pending", async () => {

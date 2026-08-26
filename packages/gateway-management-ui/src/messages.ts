@@ -529,12 +529,6 @@ export const messages = defineMessages({
       "Use service accounts for automation. Each account exchanges client credentials for short-lived JWTs that work only with this gateway.",
     description: "Introductory text for gateway service accounts.",
   },
-  manageServiceAccounts: {
-    id: "app.gateway.serviceAccounts.manage",
-    defaultMessage: "Create or manage service accounts",
-    description:
-      "Link from the interactive connection workflow to service-account management.",
-  },
   createServiceAccount: {
     id: "app.gateway.serviceAccounts.create",
     defaultMessage: "Create service account",
