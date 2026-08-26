@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { GatewayConnectionSteps } from "./gateway-connection-steps";
 import {
+  buildOpenShellInstallCommand,
   buildSandboxCreateCommand,
   type GatewayConnection,
   installDocsUrl,
@@ -43,23 +44,65 @@ describe("GatewayConnectionSteps", () => {
     ).toBeTruthy();
   });
 
-  it("renders a prerequisite alert with an install docs link", () => {
-    renderSteps(readyGateway);
+  it("renders registration, installation, and provider setup in order", () => {
+    const { container } = renderSteps(readyGateway);
 
     expect(screen.getByText("Prerequisite")).toBeTruthy();
     expect(
       screen.getByText(
-        /OpenShell CLI must be installed before running the commands below/,
+        /Install the OpenShell CLI version for this gateway before you add the provider/,
       ),
     ).toBeTruthy();
 
     const link = screen.getByRole("link", {
-      name: "Install the OpenShell CLI (opens in a new tab)",
+      name: "View installation documentation (opens in a new tab)",
     });
     expect(link.getAttribute("href")).toBe(installDocsUrl);
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toContain("noopener");
-    expect(link.textContent).toContain("Install the OpenShell CLI");
+    expect(link.classList.contains("pf-m-small")).toBe(true);
+    expect(link.textContent).toContain("View installation documentation");
+
+    const installCommand = buildOpenShellInstallCommand(readyGateway);
+    expect(installCommand).toBeDefined();
+
+    const commandBlocks = Array.from(container.querySelectorAll("code"));
+    const registrationIndex = commandBlocks.findIndex((code) =>
+      code.textContent.includes("openshell gateway add"),
+    );
+    const installationIndex = commandBlocks.findIndex(
+      (code) => code.textContent === installCommand,
+    );
+    const providerIndex = commandBlocks.findIndex((code) =>
+      code.textContent.includes("openshell provider create"),
+    );
+
+    expect(registrationIndex).toBeGreaterThanOrEqual(0);
+    expect(installationIndex).toBeGreaterThan(registrationIndex);
+    expect(providerIndex).toBeGreaterThan(installationIndex);
+
+    const installationCode = commandBlocks[installationIndex];
+    expect(installationCode?.textContent.split("\n")).toHaveLength(2);
+    expect(
+      installationCode
+        ?.closest(".pf-v6-c-code-block")
+        ?.querySelector("ol, [data-line-number]"),
+    ).toBeNull();
+  });
+
+  it("copies the version-matched installation command", async () => {
+    const user = userEvent.setup();
+    renderSteps(readyGateway);
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Copy the OpenShell installation command",
+      }),
+    );
+
+    expect(await navigator.clipboard.readText()).toBe(
+      buildOpenShellInstallCommand(readyGateway),
+    );
   });
 
   it("highlights both command blocks with Shiki once they resolve", async () => {
@@ -107,7 +150,7 @@ describe("GatewayConnectionSteps", () => {
     });
 
     await user.click(
-      screen.getByRole("button", { name: "Copy the one-time setup commands" }),
+      screen.getByRole("button", { name: "Copy the provider setup commands" }),
     );
 
     const copied = await navigator.clipboard.readText();
@@ -144,8 +187,11 @@ describe("GatewayConnectionSteps", () => {
     expect(screen.getByRole("status")).toBeTruthy();
     expect(
       screen.queryByRole("button", {
-        name: "Copy the one-time setup commands",
+        name: "Copy the provider setup commands",
       }),
+    ).toBeNull();
+    expect(
+      screen.queryByText(/OPENSHELL_GATEWAY_VERSION/, { selector: "code" }),
     ).toBeNull();
   });
 });

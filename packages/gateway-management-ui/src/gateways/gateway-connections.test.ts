@@ -3,9 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   buildGatewayAddCommand,
   buildInferenceSetCommand,
+  buildOpenShellInstallCommand,
   buildProviderCreateCommand,
+  buildProviderSetupScript,
   buildSandboxCreateCommand,
-  buildSetupScript,
   claudeModel,
   gatewayStatusAppearance,
   isGatewayReadyToConnect,
@@ -47,6 +48,24 @@ describe("gateway connections", () => {
 
     expect(buildGatewayAddCommand(unsafeGateway)).toContain(
       "--name 'gateway $(unsafe)'",
+    );
+  });
+
+  it("builds the version-matched OpenShell installation command", () => {
+    expect(buildOpenShellInstallCommand(gateway)).toBe(
+      `OPENSHELL_GATEWAY_VERSION="v$(openshell --gateway-endpoint https://gateway.example.test:443 status --output json | jq -r '.version')"
+curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | OPENSHELL_VERSION="$OPENSHELL_GATEWAY_VERSION" sh`,
+    );
+  });
+
+  it("quotes the gateway endpoint in the installation command", () => {
+    const command = buildOpenShellInstallCommand({
+      ...gateway,
+      endpoint: "https://gateway.example.test/a path",
+    });
+
+    expect(command).toContain(
+      "--gateway-endpoint 'https://gateway.example.test/a path' status",
     );
   });
 
@@ -136,7 +155,7 @@ describe("gateway connections", () => {
   });
 
   it("threads provider and model overrides through the setup script", () => {
-    const script = buildSetupScript(gateway, {
+    const script = buildProviderSetupScript(gateway, {
       model: "MODEL",
       providerName: "PROV",
     });
@@ -173,31 +192,27 @@ describe("gateway connections", () => {
     expect(cmd).toContain("-- claude --bare --model claude-opus-5");
   });
 
-  it("combines login, provider, and inference into one setup script when ready", () => {
-    const script = buildSetupScript(gateway);
+  it("combines provider and inference commands after installation", () => {
+    const script = buildProviderSetupScript(gateway);
 
-    // The three preamble commands are consolidated into a single copyable block.
-    expect(script).toContain("--oidc-issuer https://issuer.example.test");
     expect(script).toContain(buildProviderCreateCommand());
     expect(script).toContain(buildInferenceSetCommand());
-    // The policy heredoc is gone; the inference-based flow needs no policy file.
+    expect(script).not.toContain("openshell gateway add");
     expect(script).not.toContain("cat >");
-    // Ordered login -> provider -> inference so it runs top to bottom.
-    const loginAt = script?.indexOf("openshell gateway add") ?? -1;
     const providerAt = script?.indexOf("openshell provider create") ?? -1;
     const inferenceAt = script?.indexOf("openshell inference set") ?? -1;
-    expect(loginAt).toBeGreaterThanOrEqual(0);
-    expect(loginAt).toBeLessThan(providerAt);
+    expect(providerAt).toBeGreaterThanOrEqual(0);
     expect(providerAt).toBeLessThan(inferenceAt);
   });
 
-  it("withholds the setup script until the gateway is ready to connect", () => {
-    expect(buildSetupScript({ ...gateway, phase: "Provisioning" })).toBe(
-      undefined,
-    );
-    expect(buildSetupScript({ ...gateway, endpoint: undefined })).toBe(
-      undefined,
-    );
+  it("withholds installation and setup until the gateway is ready", () => {
+    for (const unavailableGateway of [
+      { ...gateway, phase: "Provisioning" },
+      { ...gateway, endpoint: undefined },
+    ]) {
+      expect(buildOpenShellInstallCommand(unavailableGateway)).toBeUndefined();
+      expect(buildProviderSetupScript(unavailableGateway)).toBeUndefined();
+    }
   });
 
   it.each([

@@ -324,8 +324,7 @@ describe("gateway shell pages", () => {
       />
     ));
 
-    // The preamble is consolidated into a single "One-time setup" block, with
-    // the re-runnable sandbox command in its own block.
+    // The one-time commands run before the reusable sandbox command.
     expect(
       screen.getByRole("heading", { level: 2, name: "One-time setup" }),
     ).toBeTruthy();
@@ -333,12 +332,28 @@ describe("gateway shell pages", () => {
       screen.getByRole("heading", { level: 2, name: "Create a sandbox" }),
     ).toBeTruthy();
 
-    // The setup block carries login, provider, and inference selection together.
-    const setupCommand = screen.getByText(/openshell gateway add/, {
+    const registrationCommand = screen.getByText(/openshell gateway add/, {
       selector: "code",
     });
-    expect(setupCommand.textContent).toContain("--from-gcloud-adc");
-    expect(setupCommand.textContent).toContain("openshell inference set");
+    const installationCommand = screen.getByText(/OPENSHELL_GATEWAY_VERSION/, {
+      selector: "code",
+    });
+    const providerCommand = screen.getByText(/openshell provider create/, {
+      selector: "code",
+    });
+    const commandBlocks = Array.from(document.querySelectorAll("code"));
+
+    expect(commandBlocks.indexOf(registrationCommand)).toBeLessThan(
+      commandBlocks.indexOf(installationCommand),
+    );
+    expect(commandBlocks.indexOf(installationCommand)).toBeLessThan(
+      commandBlocks.indexOf(providerCommand),
+    );
+    expect(installationCommand.textContent).toContain(
+      "--gateway-endpoint https://gateway.example.com:443 status",
+    );
+    expect(providerCommand.textContent).toContain("--from-gcloud-adc");
+    expect(providerCommand.textContent).toContain("openshell inference set");
     expect(
       screen.getByText(/openshell sandbox create/, { selector: "code" }),
     ).toBeTruthy();

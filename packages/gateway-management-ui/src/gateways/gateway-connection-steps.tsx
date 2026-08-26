@@ -1,19 +1,25 @@
 import {
   Alert,
-  AlertActionLink,
+  Button,
+  ClipboardCopyButton,
+  CodeBlock,
+  CodeBlockAction,
+  CodeBlockCode,
   Content,
   Skeleton,
   Title,
 } from "@patternfly/react-core";
 import { ExternalLinkAltIcon } from "@patternfly/react-icons";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 import { useIntl } from "react-intl";
 
 import { messages } from "../messages";
 import { EditableCommand } from "./editable-command";
 import {
+  buildGatewayAddCommand,
+  buildOpenShellInstallCommand,
+  buildProviderSetupScript,
   buildSandboxCreateCommand,
-  buildSetupScript,
   claudeModel,
   type GatewayConnection,
   installDocsUrl,
@@ -32,6 +38,47 @@ const modelMarker = "OSMODELNAMEZ";
 const sandboxMarker = "OSSANDBOXNAMEZ";
 const setupMarkers = [providerMarker, modelMarker];
 const sandboxMarkers = [sandboxMarker, modelMarker];
+
+function CopyableCommand({
+  command,
+  copyAriaLabel,
+}: {
+  command: string;
+  copyAriaLabel: string;
+}) {
+  const intl = useIntl();
+  const id = useId();
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <CodeBlock
+      actions={
+        <CodeBlockAction>
+          <ClipboardCopyButton
+            aria-label={copyAriaLabel}
+            exitDelay={copied ? 1500 : 600}
+            id={`${id}-copy-button`}
+            maxWidth="110px"
+            onClick={() => {
+              void navigator.clipboard.writeText(command);
+              setCopied(true);
+            }}
+            onTooltipHidden={() => {
+              setCopied(false);
+            }}
+            variant="plain"
+          >
+            {copied
+              ? intl.formatMessage(messages.copied)
+              : intl.formatMessage(messages.copy)}
+          </ClipboardCopyButton>
+        </CodeBlockAction>
+      }
+    >
+      <CodeBlockCode id={id}>{command}</CodeBlockCode>
+    </CodeBlock>
+  );
+}
 
 function ConnectionStep({
   children,
@@ -65,11 +112,13 @@ export function GatewayConnectionSteps({
 
   // Marker form drives the (stable) highlight; the resolved form drives copy and
   // matches a whole-block text selection exactly.
-  const setupTemplate = buildSetupScript(gateway, {
+  const gatewayAddCommand = buildGatewayAddCommand(gateway);
+  const installCommand = buildOpenShellInstallCommand(gateway);
+  const setupTemplate = buildProviderSetupScript(gateway, {
     model: modelMarker,
     providerName: providerMarker,
   });
-  const setupCopy = buildSetupScript(gateway, { model, providerName });
+  const setupCopy = buildProviderSetupScript(gateway, { model, providerName });
 
   return (
     <ol className={styles.steps}>
@@ -77,9 +126,29 @@ export function GatewayConnectionSteps({
         description={intl.formatMessage(messages.connectionSetupDescription)}
         title={intl.formatMessage(messages.connectionSetupTitle)}
       >
+        {gatewayAddCommand ? (
+          <CopyableCommand
+            command={gatewayAddCommand}
+            copyAriaLabel={intl.formatMessage(messages.copyConnectionCommand, {
+              gatewayName: gateway.name,
+            })}
+          />
+        ) : (
+          <div
+            aria-label={intl.formatMessage(messages.connectionLoginUnavailable)}
+            className={styles.commandPending}
+            role="status"
+          >
+            <Skeleton width="52%" />
+            <Skeleton width="38%" />
+            <Skeleton width="72%" />
+            <Skeleton width="35%" />
+            <Skeleton width="58%" />
+          </div>
+        )}
         <Alert
           actionLinks={
-            <AlertActionLink
+            <Button
               aria-label={intl.formatMessage(
                 messages.connectionInstallLinkNewTab,
               )}
@@ -87,11 +156,14 @@ export function GatewayConnectionSteps({
               href={installDocsUrl}
               icon={<ExternalLinkAltIcon aria-hidden />}
               iconPosition="end"
+              isInline
               rel="noopener noreferrer"
+              size="sm"
               target="_blank"
+              variant="link"
             >
               {intl.formatMessage(messages.connectionInstallLink)}
-            </AlertActionLink>
+            </Button>
           }
           className={styles.prereqAlert}
           component="h3"
@@ -99,7 +171,17 @@ export function GatewayConnectionSteps({
           title={intl.formatMessage(messages.connectionInstallPrereqTitle)}
           variant="info"
         >
-          {intl.formatMessage(messages.connectionInstallPrereq)}
+          <div className={styles.prereqContent}>
+            <Content component="p">
+              {intl.formatMessage(messages.connectionInstallPrereq)}
+            </Content>
+            {installCommand ? (
+              <CopyableCommand
+                command={installCommand}
+                copyAriaLabel={intl.formatMessage(messages.copyInstallCommand)}
+              />
+            ) : null}
+          </div>
         </Alert>
         {setupTemplate && setupCopy ? (
           <EditableCommand
@@ -120,19 +202,7 @@ export function GatewayConnectionSteps({
             templateCommand={setupTemplate}
             values={{ [modelMarker]: model, [providerMarker]: providerName }}
           />
-        ) : (
-          <div
-            aria-label={intl.formatMessage(messages.connectionLoginUnavailable)}
-            className={styles.commandPending}
-            role="status"
-          >
-            <Skeleton width="52%" />
-            <Skeleton width="38%" />
-            <Skeleton width="72%" />
-            <Skeleton width="35%" />
-            <Skeleton width="58%" />
-          </div>
-        )}
+        ) : null}
       </ConnectionStep>
 
       <ConnectionStep

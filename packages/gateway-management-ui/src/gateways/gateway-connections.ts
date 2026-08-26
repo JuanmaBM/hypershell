@@ -77,6 +77,28 @@ export const vertexProviderName = "my-gcp";
 export const installDocsUrl =
   "https://docs.nvidia.com/openshell/about/installation";
 
+const installScriptUrl =
+  "https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh";
+
+/**
+ * Builds an installation command that matches the OpenShell gateway version.
+ * The gateway registration command must run before this command.
+ */
+export function buildOpenShellInstallCommand(
+  gateway: GatewayConnection,
+): string | undefined {
+  if (!isGatewayReadyToConnect(gateway) || !gateway.endpoint) {
+    return undefined;
+  }
+
+  const endpoint = shellArgument(gateway.endpoint);
+
+  return [
+    `OPENSHELL_GATEWAY_VERSION="v$(openshell --gateway-endpoint ${endpoint} status --output json | jq -r '.version')"`,
+    `curl -LsSf ${installScriptUrl} | OPENSHELL_VERSION="$OPENSHELL_GATEWAY_VERSION" sh`,
+  ].join("\n");
+}
+
 /** Default sandbox name shown in the copyable create-sandbox command. */
 export const sandboxName = "mysand";
 
@@ -131,32 +153,25 @@ export function buildSandboxCreateCommand(
 }
 
 /**
- * One-time setup script that logs in to the gateway, adds the Claude on Vertex AI
- * provider, and selects the model, combined into a single copyable block so
- * operators paste the whole preamble at once instead of stepping through three
- * commands. Returns `undefined` until the gateway is ready to connect, because
- * registration requires a running gateway endpoint; the caller renders a pending
- * state in that case.
+ * Builds the provider setup commands that run after gateway registration and
+ * OpenShell installation. The function returns `undefined` until the gateway
+ * is ready.
  */
-export function buildSetupScript(
+export function buildProviderSetupScript(
   gateway: GatewayConnection,
   overrides: { model?: string; providerName?: string } = {},
 ): string | undefined {
-  const gatewayAdd = buildGatewayAddCommand(gateway);
-  if (!gatewayAdd) {
+  if (!isGatewayReadyToConnect(gateway)) {
     return undefined;
   }
 
   const { model = claudeModel, providerName = vertexProviderName } = overrides;
 
   return [
-    "# 1. Log in to the gateway",
-    gatewayAdd,
-    "",
-    "# 2. Add the Claude on Vertex AI provider",
+    "# Add the Claude on Vertex AI provider",
     buildProviderCreateCommand(providerName),
     "",
-    "# 3. Select the model",
+    "# Select the model",
     buildInferenceSetCommand(providerName, model),
   ].join("\n");
 }
