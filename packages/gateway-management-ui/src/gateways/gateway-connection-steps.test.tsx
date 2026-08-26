@@ -44,7 +44,7 @@ describe("GatewayConnectionSteps", () => {
     ).toBeTruthy();
   });
 
-  it("renders registration, installation, and provider setup in order", () => {
+  it("renders installation before the combined setup commands", () => {
     const { container } = renderSteps(readyGateway);
 
     expect(screen.getByText("Prerequisite")).toBeTruthy();
@@ -77,9 +77,9 @@ describe("GatewayConnectionSteps", () => {
       code.textContent.includes("openshell provider create"),
     );
 
-    expect(registrationIndex).toBeGreaterThanOrEqual(0);
-    expect(installationIndex).toBeGreaterThan(registrationIndex);
-    expect(providerIndex).toBeGreaterThan(installationIndex);
+    expect(installationIndex).toBeGreaterThanOrEqual(0);
+    expect(installationIndex).toBeLessThan(registrationIndex);
+    expect(registrationIndex).toBe(providerIndex);
 
     const installationCode = commandBlocks[installationIndex];
     expect(installationCode?.textContent).toContain("\\\n");
@@ -110,7 +110,7 @@ describe("GatewayConnectionSteps", () => {
     const { container } = renderSteps(readyGateway);
 
     await waitFor(() => {
-      expect(container.querySelectorAll(".shiki")).toHaveLength(4);
+      expect(container.querySelectorAll(".shiki")).toHaveLength(3);
     });
 
     const highlightedCommands = Array.from(
@@ -147,7 +147,7 @@ describe("GatewayConnectionSteps", () => {
     const { container } = renderSteps(readyGateway);
 
     await waitFor(() => {
-      expect(container.querySelectorAll(".shiki")).toHaveLength(4);
+      expect(container.querySelectorAll(".shiki")).toHaveLength(3);
     });
 
     const providerFields = screen.getAllByRole("textbox", {
@@ -166,10 +166,11 @@ describe("GatewayConnectionSteps", () => {
     });
 
     await user.click(
-      screen.getByRole("button", { name: "Copy the provider setup commands" }),
+      screen.getByRole("button", { name: "Copy the one-time setup commands" }),
     );
 
     const copied = await navigator.clipboard.readText();
+    expect(copied).toContain("openshell gateway add");
     expect(copied).toContain("--name acme");
     expect(copied).toContain("--provider acme");
   });
@@ -193,17 +194,28 @@ describe("GatewayConnectionSteps", () => {
     );
   });
 
-  it("shows a pending placeholder until the gateway is ready", () => {
+  it("hides the installation prerequisite until the gateway is ready", () => {
     renderSteps({
       ...readyGateway,
-      endpoint: undefined,
       phase: "Provisioning",
+      status: "Provisioning",
     });
 
     expect(screen.getByRole("status")).toBeTruthy();
+    expect(screen.queryByText("Prerequisite")).toBeNull();
+    expect(
+      screen.queryByText(
+        /Install the OpenShell CLI version for this gateway before you add the provider/,
+      ),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("link", {
+        name: "View installation documentation (opens in a new tab)",
+      }),
+    ).toBeNull();
     expect(
       screen.queryByRole("button", {
-        name: "Copy the provider setup commands",
+        name: "Copy the one-time setup commands",
       }),
     ).toBeNull();
     expect(

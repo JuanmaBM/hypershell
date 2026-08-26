@@ -12,9 +12,8 @@ import { useIntl } from "react-intl";
 import { messages } from "../messages";
 import { CommandBlock } from "./editable-command";
 import {
-  buildGatewayAddCommand,
+  buildOneTimeSetupScript,
   buildOpenShellInstallCommand,
-  buildProviderSetupScript,
   buildSandboxCreateCommand,
   claudeModel,
   type GatewayConnection,
@@ -67,13 +66,12 @@ export function GatewayConnectionSteps({
 
   // Marker form drives the (stable) highlight; the resolved form drives copy and
   // matches a whole-block text selection exactly.
-  const gatewayAddCommand = buildGatewayAddCommand(gateway);
   const installCommand = buildOpenShellInstallCommand(gateway);
-  const setupTemplate = buildProviderSetupScript(gateway, {
+  const setupTemplate = buildOneTimeSetupScript(gateway, {
     model: modelMarker,
     providerName: providerMarker,
   });
-  const setupCopy = buildProviderSetupScript(gateway, { model, providerName });
+  const setupCopy = buildOneTimeSetupScript(gateway, { model, providerName });
 
   return (
     <ol className={styles.steps}>
@@ -81,63 +79,43 @@ export function GatewayConnectionSteps({
         description={intl.formatMessage(messages.connectionSetupDescription)}
         title={intl.formatMessage(messages.connectionSetupTitle)}
       >
-        {gatewayAddCommand ? (
-          <CommandBlock
-            copyAriaLabel={intl.formatMessage(messages.copyConnectionCommand, {
-              gatewayName: gateway.name,
-            })}
-            copyText={gatewayAddCommand}
-          />
-        ) : (
-          <div
-            aria-label={intl.formatMessage(messages.connectionLoginUnavailable)}
-            className={styles.commandPending}
-            role="status"
+        {installCommand ? (
+          <Alert
+            actionLinks={
+              <Button
+                aria-label={intl.formatMessage(
+                  messages.connectionInstallLinkNewTab,
+                )}
+                component="a"
+                href={installDocsUrl}
+                icon={<ExternalLinkAltIcon aria-hidden />}
+                iconPosition="end"
+                isInline
+                rel="noopener noreferrer"
+                size="sm"
+                target="_blank"
+                variant="link"
+              >
+                {intl.formatMessage(messages.connectionInstallLink)}
+              </Button>
+            }
+            className={styles.prereqAlert}
+            component="h3"
+            isInline
+            title={intl.formatMessage(messages.connectionInstallPrereqTitle)}
+            variant="info"
           >
-            <Skeleton width="52%" />
-            <Skeleton width="38%" />
-            <Skeleton width="72%" />
-            <Skeleton width="35%" />
-            <Skeleton width="58%" />
-          </div>
-        )}
-        <Alert
-          actionLinks={
-            <Button
-              aria-label={intl.formatMessage(
-                messages.connectionInstallLinkNewTab,
-              )}
-              component="a"
-              href={installDocsUrl}
-              icon={<ExternalLinkAltIcon aria-hidden />}
-              iconPosition="end"
-              isInline
-              rel="noopener noreferrer"
-              size="sm"
-              target="_blank"
-              variant="link"
-            >
-              {intl.formatMessage(messages.connectionInstallLink)}
-            </Button>
-          }
-          className={styles.prereqAlert}
-          component="h3"
-          isInline
-          title={intl.formatMessage(messages.connectionInstallPrereqTitle)}
-          variant="info"
-        >
-          <div className={styles.prereqContent}>
-            <Content component="p">
-              {intl.formatMessage(messages.connectionInstallPrereq)}
-            </Content>
-            {installCommand ? (
+            <div className={styles.prereqContent}>
+              <Content component="p">
+                {intl.formatMessage(messages.connectionInstallPrereq)}
+              </Content>
               <CommandBlock
                 copyAriaLabel={intl.formatMessage(messages.copyInstallCommand)}
                 copyText={installCommand}
               />
-            ) : null}
-          </div>
-        </Alert>
+            </div>
+          </Alert>
+        ) : null}
         {setupTemplate && setupCopy ? (
           <CommandBlock
             copyAriaLabel={intl.formatMessage(messages.copySetupCommand)}
@@ -157,7 +135,19 @@ export function GatewayConnectionSteps({
             templateCommand={setupTemplate}
             values={{ [modelMarker]: model, [providerMarker]: providerName }}
           />
-        ) : null}
+        ) : (
+          <div
+            aria-label={intl.formatMessage(messages.connectionLoginUnavailable)}
+            className={styles.commandPending}
+            role="status"
+          >
+            <Skeleton width="52%" />
+            <Skeleton width="38%" />
+            <Skeleton width="72%" />
+            <Skeleton width="35%" />
+            <Skeleton width="58%" />
+          </div>
+        )}
       </ConnectionStep>
 
       <ConnectionStep

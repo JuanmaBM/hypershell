@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildGatewayAddCommand,
   buildInferenceSetCommand,
+  buildOneTimeSetupScript,
   buildOpenShellInstallCommand,
   buildProviderCreateCommand,
-  buildProviderSetupScript,
   buildSandboxCreateCommand,
   claudeModel,
   gatewayStatusAppearance,
@@ -164,7 +164,7 @@ describe("gateway connections", () => {
   });
 
   it("threads provider and model overrides through the setup script", () => {
-    const script = buildProviderSetupScript(gateway, {
+    const script = buildOneTimeSetupScript(gateway, {
       model: "MODEL",
       providerName: "PROV",
     });
@@ -201,16 +201,18 @@ describe("gateway connections", () => {
     expect(cmd).toContain("-- claude --bare --model claude-opus-5");
   });
 
-  it("combines provider and inference commands after installation", () => {
-    const script = buildProviderSetupScript(gateway);
+  it("combines gateway registration, provider, and inference commands", () => {
+    const script = buildOneTimeSetupScript(gateway);
 
+    expect(script).toContain(buildGatewayAddCommand(gateway));
     expect(script).toContain(buildProviderCreateCommand());
     expect(script).toContain(buildInferenceSetCommand());
-    expect(script).not.toContain("openshell gateway add");
     expect(script).not.toContain("cat >");
+    const gatewayAt = script?.indexOf("openshell gateway add") ?? -1;
     const providerAt = script?.indexOf("openshell provider create") ?? -1;
     const inferenceAt = script?.indexOf("openshell inference set") ?? -1;
-    expect(providerAt).toBeGreaterThanOrEqual(0);
+    expect(gatewayAt).toBeGreaterThanOrEqual(0);
+    expect(gatewayAt).toBeLessThan(providerAt);
     expect(providerAt).toBeLessThan(inferenceAt);
   });
 
@@ -220,7 +222,7 @@ describe("gateway connections", () => {
       { ...gateway, endpoint: undefined },
     ]) {
       expect(buildOpenShellInstallCommand(unavailableGateway)).toBeUndefined();
-      expect(buildProviderSetupScript(unavailableGateway)).toBeUndefined();
+      expect(buildOneTimeSetupScript(unavailableGateway)).toBeUndefined();
     }
   });
 

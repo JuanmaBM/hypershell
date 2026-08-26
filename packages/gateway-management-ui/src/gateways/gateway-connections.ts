@@ -82,7 +82,7 @@ const installScriptUrl =
 
 /**
  * Builds an installation command that matches the OpenShell gateway version.
- * The gateway registration command must run before this command.
+ * The gateway must be ready so that its status endpoint returns the version.
  */
 export function buildOpenShellInstallCommand(
   gateway: GatewayConnection,
@@ -160,25 +160,28 @@ export function buildSandboxCreateCommand(
 }
 
 /**
- * Builds the provider setup commands that run after gateway registration and
- * OpenShell installation. The function returns `undefined` until the gateway
- * is ready.
+ * Builds the one-time gateway registration and provider setup commands. The
+ * function returns `undefined` until the gateway is ready.
  */
-export function buildProviderSetupScript(
+export function buildOneTimeSetupScript(
   gateway: GatewayConnection,
   overrides: { model?: string; providerName?: string } = {},
 ): string | undefined {
-  if (!isGatewayReadyToConnect(gateway)) {
+  const gatewayAdd = buildGatewayAddCommand(gateway);
+  if (!gatewayAdd) {
     return undefined;
   }
 
   const { model = claudeModel, providerName = vertexProviderName } = overrides;
 
   return [
-    "# Add the Claude on Vertex AI provider",
+    "# 1. Register the gateway",
+    gatewayAdd,
+    "",
+    "# 2. Add the Claude on Vertex AI provider",
     buildProviderCreateCommand(providerName),
     "",
-    "# Select the model",
+    "# 3. Select the model",
     buildInferenceSetCommand(providerName, model),
   ].join("\n");
 }

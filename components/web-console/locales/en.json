@@ -128,8 +128,8 @@
     "description": "Accessible label for copying the create-sandbox command."
   },
   "app.gateway.connection.copySetupCommand": {
-    "defaultMessage": "Copy the provider setup commands",
-    "description": "Accessible label for copying the provider creation and model selection commands."
+    "defaultMessage": "Copy the one-time setup commands",
+    "description": "Accessible label for copying the gateway registration, provider creation, and model selection commands."
   },
   "app.gateway.connection.editModel": {
     "defaultMessage": "Model (editable)",
@@ -172,7 +172,7 @@
     "description": "Title for the create-sandbox connection step."
   },
   "app.gateway.connection.setup.description": {
-    "defaultMessage": "Run these commands in order to register this gateway, install the OpenShell CLI version for this gateway, add the Claude on Vertex AI provider, and select the model.",
+    "defaultMessage": "Install the OpenShell CLI version for this gateway, then run these commands in order to register the gateway, add the Claude on Vertex AI provider, and select the model.",
     "description": "Supporting text for the one-time setup connection step."
   },
   "app.gateway.connection.setup.title": {

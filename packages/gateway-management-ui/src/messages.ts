@@ -127,7 +127,7 @@ export const messages = defineMessages({
   connectionSetupDescription: {
     id: "app.gateway.connection.setup.description",
     defaultMessage:
-      "Run these commands in order to register this gateway, install the OpenShell CLI version for this gateway, add the Claude on Vertex AI provider, and select the model.",
+      "Install the OpenShell CLI version for this gateway, then run these commands in order to register the gateway, add the Claude on Vertex AI provider, and select the model.",
     description: "Supporting text for the one-time setup connection step.",
   },
   connectionSetupTitle: {
@@ -185,9 +185,9 @@ export const messages = defineMessages({
   },
   copySetupCommand: {
     id: "app.gateway.connection.copySetupCommand",
-    defaultMessage: "Copy the provider setup commands",
+    defaultMessage: "Copy the one-time setup commands",
     description:
-      "Accessible label for copying the provider creation and model selection commands.",
+      "Accessible label for copying the gateway registration, provider creation, and model selection commands.",
   },
   created: {
     id: "app.table.column.created",

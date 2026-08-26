@@ -343,12 +343,10 @@ describe("gateway shell pages", () => {
     });
     const commandBlocks = Array.from(document.querySelectorAll("code"));
 
-    expect(commandBlocks.indexOf(registrationCommand)).toBeLessThan(
-      commandBlocks.indexOf(installationCommand),
-    );
     expect(commandBlocks.indexOf(installationCommand)).toBeLessThan(
-      commandBlocks.indexOf(providerCommand),
+      commandBlocks.indexOf(registrationCommand),
     );
+    expect(registrationCommand).toBe(providerCommand);
     expect(installationCommand.textContent).toContain(
       "--gateway-endpoint https://gateway.example.com:443 \\",
     );
