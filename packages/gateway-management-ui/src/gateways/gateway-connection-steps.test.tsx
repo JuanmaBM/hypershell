@@ -15,6 +15,7 @@ const readyGateway: GatewayConnection = {
   clusterName: "Hub cluster",
   consoleUrl: "https://console.example.test",
   endpoint: "https://gateway.example.test:443",
+  gatewayVersion: "0.0.109",
   id: "gateway-1",
   name: "gateway-1",
   oidcAudience: "openshell-cli",
@@ -83,7 +84,7 @@ describe("GatewayConnectionSteps", () => {
 
     const installationCode = commandBlocks[installationIndex];
     expect(installationCode?.textContent).toContain("\\\n");
-    expect(installationCode?.textContent.split("\n")).toHaveLength(9);
+    expect(installationCode?.textContent.split("\n")).toHaveLength(3);
     expect(
       installationCode
         ?.closest(".pf-v6-c-code-block")
@@ -124,7 +125,7 @@ describe("GatewayConnectionSteps", () => {
     ).toBe(true);
     expect(
       highlightedCommands.some((command) =>
-        command.includes("OPENSHELL_GATEWAY_VERSION"),
+        command.includes("OPENSHELL_VERSION=v0.0.109"),
       ),
     ).toBe(true);
   });
@@ -219,7 +220,21 @@ describe("GatewayConnectionSteps", () => {
       }),
     ).toBeNull();
     expect(
-      screen.queryByText(/OPENSHELL_GATEWAY_VERSION/, { selector: "code" }),
+      screen.queryByText(/OPENSHELL_VERSION=/, { selector: "code" }),
     ).toBeNull();
+  });
+
+  it("hides the installation prerequisite without a reconciled version", () => {
+    renderSteps({ ...readyGateway, gatewayVersion: undefined });
+
+    expect(screen.queryByText("Prerequisite")).toBeNull();
+    expect(
+      screen.queryByRole("link", {
+        name: "View installation documentation (opens in a new tab)",
+      }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Copy the one-time setup commands" }),
+    ).toBeTruthy();
   });
 });

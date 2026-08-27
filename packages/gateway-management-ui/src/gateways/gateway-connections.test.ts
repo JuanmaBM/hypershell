@@ -19,6 +19,7 @@ const gateway: GatewayConnection = {
   clusterName: "Hub cluster",
   consoleUrl: "https://console.example.test",
   endpoint: "https://gateway.example.test:443",
+  gatewayVersion: "0.0.109",
   id: "gateway-1",
   name: "gateway-1",
   oidcAudience: "openshell-cli",
@@ -54,28 +55,38 @@ describe("gateway connections", () => {
   it("builds the version-matched OpenShell installation command", () => {
     expect(buildOpenShellInstallCommand(gateway)).toBe(
       [
-        `OPENSHELL_GATEWAY_VERSION="v$(openshell \\`,
-        "  --gateway-endpoint https://gateway.example.test:443 \\",
-        "  status \\",
-        "  --output json \\",
-        `  | jq -r '.version')"`,
-        "",
         "curl -LsSf \\",
         "  https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh \\",
-        `  | OPENSHELL_VERSION="$OPENSHELL_GATEWAY_VERSION" sh`,
+        "  | OPENSHELL_VERSION=v0.0.109 sh",
       ].join("\n"),
     );
   });
 
-  it("quotes the gateway endpoint in the installation command", () => {
+  it("quotes an unsafe gateway version in the installation command", () => {
     const command = buildOpenShellInstallCommand({
       ...gateway,
-      endpoint: "https://gateway.example.test/a path",
+      gatewayVersion: "0.0.109; unsafe",
     });
 
-    expect(command).toContain(
-      "--gateway-endpoint 'https://gateway.example.test/a path' \\\n  status",
-    );
+    expect(command).toContain("OPENSHELL_VERSION='v0.0.109; unsafe' sh");
+  });
+
+  it("removes a postfix and does not add a second version prefix", () => {
+    expect(
+      buildOpenShellInstallCommand({
+        ...gateway,
+        gatewayVersion: "v0.0.109-rh9a8f8",
+      }),
+    ).toContain("OPENSHELL_VERSION=v0.0.109 sh");
+  });
+
+  it("removes a postfix before it adds the version prefix", () => {
+    expect(
+      buildOpenShellInstallCommand({
+        ...gateway,
+        gatewayVersion: "0.0.109-rh9a8f8",
+      }),
+    ).toContain("OPENSHELL_VERSION=v0.0.109 sh");
   });
 
   it("omits OIDC flags when OIDC is not configured", () => {
@@ -224,6 +235,13 @@ describe("gateway connections", () => {
       expect(buildOpenShellInstallCommand(unavailableGateway)).toBeUndefined();
       expect(buildOneTimeSetupScript(unavailableGateway)).toBeUndefined();
     }
+  });
+
+  it("withholds installation until a reconciled version is available", () => {
+    const gatewayWithoutVersion = { ...gateway, gatewayVersion: undefined };
+
+    expect(buildOpenShellInstallCommand(gatewayWithoutVersion)).toBeUndefined();
+    expect(buildOneTimeSetupScript(gatewayWithoutVersion)).toBeDefined();
   });
 
   it.each([

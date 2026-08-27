@@ -596,10 +596,6 @@ func reconcileRouteResources(ctx context.Context, dynamicClient dynamic.Interfac
 				"port":     int64(8080),
 				"protocol": "TCP",
 			},
-			map[string]interface{}{
-				"port":     int64(8081),
-				"protocol": "TCP",
-			},
 		},
 		"from": []interface{}{
 			map[string]interface{}{
@@ -754,7 +750,7 @@ func deployGateway(
 				continue
 			}
 
-			obj, err := ApplyManifestToNamespace(manifest.DeepCopy(), nsConfig.Name, nsConfig.Gateway, images)
+			obj, err := ApplyManifestToNamespace(manifest.DeepCopy(), nsConfig.Name, opts.ControlPlaneNamespace, nsConfig.Gateway, images)
 			if err != nil {
 				return fmt.Errorf("apply substitutions for %s: %w", filename, err)
 			}
@@ -2303,10 +2299,6 @@ func reconcileGatewayAPIResources(ctx context.Context, dynamicClient dynamic.Int
 			"ports": []interface{}{
 				map[string]interface{}{
 					"port":     int64(8080),
-					"protocol": "TCP",
-				},
-				map[string]interface{}{
-					"port":     int64(8081),
 					"protocol": "TCP",
 				},
 			},

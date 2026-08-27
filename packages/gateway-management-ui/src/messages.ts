@@ -126,7 +126,7 @@ export const messages = defineMessages({
   connectionSetupDescription: {
     id: "app.gateway.connection.setup.description",
     defaultMessage:
-      "Install the OpenShell CLI version for this gateway, then run these commands in order to register the gateway, add the Claude on Vertex AI provider, and select the model.",
+      "Run these commands in order to register the gateway, add the Claude on Vertex AI provider, and select the model.",
     description: "Supporting text for the one-time setup connection step.",
   },
   connectionSetupTitle: {

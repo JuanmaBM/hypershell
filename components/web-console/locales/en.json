@@ -172,7 +172,7 @@
     "description": "Title for the create-sandbox connection step."
   },
   "app.gateway.connection.setup.description": {
-    "defaultMessage": "Install the OpenShell CLI version for this gateway, then run these commands in order to register the gateway, add the Claude on Vertex AI provider, and select the model.",
+    "defaultMessage": "Run these commands in order to register the gateway, add the Claude on Vertex AI provider, and select the model.",
     "description": "Supporting text for the one-time setup connection step."
   },
   "app.gateway.connection.setup.title": {

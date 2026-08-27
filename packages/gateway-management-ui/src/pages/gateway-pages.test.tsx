@@ -20,6 +20,7 @@ const previewGateway: GatewayConnection = {
   consoleUrl: "https://console.example.test",
   createdAt: "2026-08-10T14:30:00Z",
   endpoint: "https://gateway.example.test:443",
+  gatewayVersion: "0.0.109",
   id: "openshell-gateway-test",
   name: "openshell-gateway-test",
   oidcAudience: "openshell-cli",
@@ -75,6 +76,7 @@ function gatewayResponse(id: string, name: string) {
     createdAt: "2026-08-10T14:30:00Z",
     databaseId: "database-1",
     externalDns: "gateway.example.com",
+    gatewayVersion: "0.0.109",
     id,
     name,
     namespace: "openshell",
@@ -183,6 +185,7 @@ describe("gateway shell pages", () => {
           consoleUrl: "https://console.example.test",
           databaseId: "database-1",
           externalDns: "gateway.example.com",
+          gatewayVersion: "0.0.109",
           id: "gateway-1",
           name: "Team gateway",
           namespace: "openshell",
@@ -310,6 +313,7 @@ describe("gateway shell pages", () => {
           consoleUrl: "https://console.example.test",
           databaseId: "database-1",
           externalDns: "gateway.example.com",
+          gatewayVersion: "0.0.109",
           id: "gateway-1",
           name: "Team gateway",
           namespace: "openshell",
@@ -335,9 +339,12 @@ describe("gateway shell pages", () => {
     const registrationCommand = screen.getByText(/openshell gateway add/, {
       selector: "code",
     });
-    const installationCommand = screen.getByText(/OPENSHELL_GATEWAY_VERSION/, {
-      selector: "code",
-    });
+    const installationCommand = screen.getByText(
+      /OPENSHELL_VERSION=v0\.0\.109/,
+      {
+        selector: "code",
+      },
+    );
     const providerCommand = screen.getByText(/openshell provider create/, {
       selector: "code",
     });
@@ -347,9 +354,8 @@ describe("gateway shell pages", () => {
       commandBlocks.indexOf(registrationCommand),
     );
     expect(registrationCommand).toBe(providerCommand);
-    expect(installationCommand.textContent).toContain(
-      "--gateway-endpoint https://gateway.example.com:443 \\",
-    );
+    expect(installationCommand.textContent).not.toContain("openshell status");
+    expect(installationCommand.textContent).not.toContain("jq");
     expect(providerCommand.textContent).toContain("--from-gcloud-adc");
     expect(providerCommand.textContent).toContain("openshell inference set");
     expect(
@@ -654,11 +660,49 @@ describe("gateway shell pages", () => {
     view.unmount();
   });
 
+  it("shows the installation command when the reconciled version arrives", async () => {
+    vi.useFakeTimers();
+    gatewayOperations.getGateway
+      .mockResolvedValueOnce({
+        ...gatewayResponse("gateway-1", "Team gateway"),
+        consoleUrl: "https://console.example.com",
+        gatewayVersion: undefined,
+      })
+      .mockResolvedValue({
+        ...gatewayResponse("gateway-1", "Team gateway"),
+        consoleUrl: "https://console.example.com",
+        gatewayVersion: "v0.0.109-rh9a8f8",
+      });
+
+    const view = renderPage(() => <GatewayPage gatewayId="gateway-1" />);
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+
+    expect(gatewayOperations.getGateway).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Prerequisite")).toBeNull();
+
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(gatewayOperations.getGateway).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Prerequisite")).toBeTruthy();
+    expect(
+      Array.from(document.querySelectorAll("code")).some((element) =>
+        element.textContent.includes("OPENSHELL_VERSION=v0.0.109"),
+      ),
+    ).toBe(true);
+
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(gatewayOperations.getGateway).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
   it("enables the console button once the console address arrives without a refresh", async () => {
     vi.useFakeTimers();
-    // Console polling is bounded by the gateway's createdAt, so pin the clock
-    // just inside the console-ready window to exercise the still-provisioning
-    // path (a gateway created moments ago whose console is about to arrive).
+    // Pin the clock to keep this test independent of the host clock.
     vi.setSystemTime(new Date("2026-08-10T14:31:00Z"));
     // A routed gateway reaches Running before its console pod can serve, so the
     // first fetch has no console URL and the button renders disabled. The control

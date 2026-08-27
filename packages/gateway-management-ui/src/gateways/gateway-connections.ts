@@ -6,6 +6,7 @@ export interface GatewayConnection {
   createdAt?: string;
   createdBy?: string;
   endpoint?: string;
+  gatewayVersion?: string;
   id: string;
   name: string;
   oidcAudience?: string;
@@ -81,28 +82,32 @@ const installScriptUrl =
   "https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh";
 
 /**
- * Builds an installation command that matches the OpenShell gateway version.
- * The gateway must be ready so that its status endpoint returns the version.
+ * Builds an installation command that matches the reconciled gateway version.
  */
 export function buildOpenShellInstallCommand(
   gateway: GatewayConnection,
 ): string | undefined {
-  if (!isGatewayReadyToConnect(gateway) || !gateway.endpoint) {
+  const gatewayVersion = gateway.gatewayVersion?.trim();
+  if (!isGatewayReadyToConnect(gateway) || !gatewayVersion) {
     return undefined;
   }
 
-  const endpoint = shellArgument(gateway.endpoint);
+  const postfixStart = gatewayVersion.indexOf("-");
+  const versionWithoutPostfix =
+    postfixStart === -1
+      ? gatewayVersion
+      : gatewayVersion.slice(0, postfixStart);
+  if (!versionWithoutPostfix) {
+    return undefined;
+  }
+  const installerVersion = versionWithoutPostfix.startsWith("v")
+    ? versionWithoutPostfix
+    : `v${versionWithoutPostfix}`;
 
   return [
-    `OPENSHELL_GATEWAY_VERSION="v$(openshell \\`,
-    `  --gateway-endpoint ${endpoint} \\`,
-    "  status \\",
-    "  --output json \\",
-    `  | jq -r '.version')"`,
-    "",
     "curl -LsSf \\",
     `  ${installScriptUrl} \\`,
-    `  | OPENSHELL_VERSION="$OPENSHELL_GATEWAY_VERSION" sh`,
+    `  | OPENSHELL_VERSION=${shellArgument(installerVersion)} sh`,
   ].join("\n");
 }
 

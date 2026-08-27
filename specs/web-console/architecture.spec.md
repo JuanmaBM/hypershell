@@ -355,18 +355,28 @@ Gateway deletion SHALL use the existing `DELETE /gateways/{id}` contract. Both d
 The `Connection` tab SHALL show this OpenShell CLI installation command in a code block:
 
 ```bash
-OPENSHELL_GATEWAY_VERSION="v$(openshell \
-  --gateway-endpoint <gateway-endpoint> \
-  status \
-  --output json \
-  | jq -r '.version')"
-
 curl -LsSf \
   https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh \
-  | OPENSHELL_VERSION="$OPENSHELL_GATEWAY_VERSION" sh
+  | OPENSHELL_VERSION=v<gateway-version> sh
 ```
 
-The command SHALL use the endpoint for the selected gateway and SHALL encode the endpoint as a safe shell argument. It SHALL use new lines and shell continuation characters as shown. The installation prerequisite and its code block SHALL appear before the one-time setup commands. The `openshell gateway add` command SHALL be in the same code block as the provider setup commands and SHALL appear before those provider commands. All command code blocks in the `Connection` tab SHALL use the same shared component and shell syntax highlighting. The installation code block SHALL not show line numbers. A small link named `View installation documentation` SHALL remain below the code block and SHALL open the NVIDIA OpenShell installation documentation in a new tab. The UI SHALL not show the installation prerequisite, its documentation link, or its command until the gateway is ready to connect. A gateway is ready to connect only when its phase is `Running` and its endpoint is available.
+The command SHALL use the read-only `gateway_version` value that the control
+plane reconciles from the gateway runtime. It SHALL encode the version as a safe
+shell argument. Before it sets `OPENSHELL_VERSION`, it SHALL remove the first
+hyphen and all text after that hyphen from the reported version. For example,
+`v0.0.109-rh9a8f8` SHALL become `v0.0.109`. It SHALL NOT require an installed
+OpenShell CLI or `jq`. The installation prerequisite and its code block SHALL
+appear before the one-time setup commands. The `openshell gateway add` command
+SHALL be in the same code
+block as the provider setup commands and SHALL appear before those provider
+commands. All command code blocks in the `Connection` tab SHALL use the same
+shared component and shell syntax highlighting. The installation code block
+SHALL not show line numbers. A small link named `View installation
+documentation` SHALL remain below the code block and SHALL open the NVIDIA
+OpenShell installation documentation in a new tab. The UI SHALL not show the
+installation prerequisite, its documentation link, or its command until the
+gateway is ready to connect and has a reconciled version. A gateway is ready to
+connect only when its phase is `Running` and its endpoint is available.
 
 The generated command SHALL include the gateway name, OIDC issuer, OIDC client ID, OIDC audience, and endpoint. Values SHALL be encoded as safe shell arguments before being presented for copying. Copy controls SHALL have an accessible name and visible success feedback, and the full command SHALL remain available at narrow widths without causing page-level horizontal overflow.
 
@@ -374,9 +384,9 @@ Preview placeholders MAY be used while the API contract is under development, bu
 
 Gateway status presentation SHALL use an explicit bounded mapping and the compact inline status pattern used by Red Hat Hybrid Cloud Console: a semantic icon or inline progress indicator followed by visible plain text, without a label or chip container. Ready, Running, and other success states SHALL use the PatternFly semantic success status and its brand success-green token, not the non-status green palette; known failure states SHALL use their defined error or warning semantics; pending or transitional states SHALL use neutral or informational semantics; and unknown, absent, or unrecognized values SHALL use gray. Status text SHALL remain visible so color is never the only carrier.
 
-While the active gateway collection page contains a gateway whose lifecycle is pending, transitional, or not yet initialized, the UI SHALL poll that page with one list request approximately every five seconds. It SHALL NOT issue one polling request per row or poll inactive pagination requests. The gateway detail page SHALL poll its selected gateway at the same interval while that gateway is pending, transitional, or awaiting its initial lifecycle value. Rapid polling SHALL stop when the current response contains only terminal states, when the owning view unmounts, or while the document is in the background.
+While the active gateway collection page contains a gateway whose lifecycle is pending, transitional, or not yet initialized, the UI SHALL poll that page with one list request approximately every five seconds. It SHALL also use a bounded polling window when a settled routed Gateway waits for its console address or reconciled runtime version. It SHALL NOT issue one polling request per row or poll inactive pagination requests. The gateway detail page SHALL use the same rules and interval for its selected gateway. Rapid polling SHALL stop when no Gateway needs these updates, when the bounded window ends, when the owning view unmounts, or while the document is in the background.
 
-**Verification:** Exercise the landing and detail experiences with zero, one, many, long-named, unauthorized, and unavailable gateways. Verify this command order: OpenShell installation, gateway registration, and provider setup. Verify that gateway registration and provider setup use one code block. Verify that all command code blocks use the same component and shell syntax highlighting. Verify that the installation command uses the endpoint for the selected gateway, uses the specified continuation lines, and has no line numbers. Verify that the installation documentation link has the specified name, size, destination, and new-tab behavior. Give a `Provisioning` gateway an endpoint and verify that the installation prerequisite, documentation link, and command are absent. Feed an API gateway with every connection field absent and verify that no preview URL or command appears in the production-composed page. Exercise every documented gateway status plus an unrecognized future value and verify semantic inline indicators with visible text and no label or chip container. Return an uninitialized lifecycle followed by Pending, Provisioning, and Running responses; verify the active collection page uses one periodic list request, detail uses one periodic detail request, each view updates to Running without user input, and polling then stops. Verify inactive pages and background documents do not poll. Verify creation dates are localized and sort through the API's creation-timestamp field. Copy and execute representative safe commands, inject shell metacharacters into every source field, verify the console destination, and test keyboard, screen-reader, zoom, and narrow viewport behavior. At the responsive table breakpoint, verify the row actions trigger occupies the top-end action-cell position and does not appear below the labeled row values.
+**Verification:** Exercise the landing and detail experiences with zero, one, many, long-named, unauthorized, and unavailable gateways. Verify this command order: OpenShell installation, gateway registration, and provider setup. Verify that gateway registration and provider setup use one code block. Verify that all command code blocks use the same component and shell syntax highlighting. Verify that the installation command uses the reconciled runtime version, removes a postfix that starts with `-`, does not call `openshell` or `jq`, uses the specified continuation lines, and has no line numbers. Verify that the installation documentation link has the specified name, size, destination, and new-tab behavior. Give a `Provisioning` gateway an endpoint and version and verify that the installation prerequisite, documentation link, and command are absent. Give a `Running` gateway an endpoint but no version and verify the same result. Then publish the version and verify that bounded polling shows the command without a manual refresh. Feed an API gateway with every connection field absent and verify that no preview URL or command appears in the production-composed page. Exercise every documented gateway status plus an unrecognized future value and verify semantic inline indicators with visible text and no label or chip container. Return an uninitialized lifecycle followed by Pending, Provisioning, and Running responses; verify the active collection page uses one periodic list request, detail uses one periodic detail request, each view updates to Running without user input, and polling then stops. Verify inactive pages and background documents do not poll. Verify creation dates are localized and sort through the API's creation-timestamp field. Copy and execute representative safe commands, inject shell metacharacters into every source field, verify the console destination, and test keyboard, screen-reader, zoom, and narrow viewport behavior. At the responsive table breakpoint, verify the row actions trigger occupies the top-end action-cell position and does not appear below the labeled row values.
 
 ### Requirement WEB-UI-03A: Platform Admin Gateway List
 
