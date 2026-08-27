@@ -98,8 +98,7 @@ export const messages = defineMessages({
     id: "app.gateway.connection.installPrereq",
     defaultMessage:
       "Install the OpenShell CLI version for this gateway before you add the provider.",
-    description:
-      "Prerequisite note shown after gateway registration and before provider setup.",
+    description: "Prerequisite note shown before the one-time setup commands.",
   },
   connectionInstallPrereqTitle: {
     id: "app.gateway.connection.installPrereqTitle",
