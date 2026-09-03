@@ -227,6 +227,8 @@ if [[ "${DB_PROVIDER}" != "deployment" ]]; then
   info "Waiting for CNPG operator..."
   kube wait --for=condition=available deployment/cnpg-controller-manager -n cnpg-system --timeout=120s
 fi
+info "Waiting for Prometheus operator..."
+kube wait --for=condition=available deployment/prometheus-operator -n default --timeout=120s
 success "Infrastructure ready"
 echo ""
 
@@ -351,6 +353,16 @@ if [[ -z "${KIND_KEYCLOAK_URL:-}" ]]; then
   kube wait --for=condition=available deployment/keycloak -n keycloak --timeout=180s
   success "Keycloak ready"
 fi
+
+# --- Prometheus monitoring stack ---
+# Applied after the main components so the hypershell-system namespace and
+# ServiceAccount already exist when the Prometheus CR and RBAC are created.
+# The Prometheus Operator CRDs were installed in the infrastructure step above.
+info "Applying Prometheus monitoring stack..."
+kustomize build --load-restrictor=LoadRestrictionsNone deploy/base/prometheus | \
+  kube apply -f -
+success "Prometheus monitoring stack applied"
+echo ""
 
 # --- Jaeger (optional, for OTel trace inspection) ---
 # Deploys an all-in-one Jaeger v2 for local trace inspection alongside the API
@@ -775,6 +787,7 @@ if [[ "${CPK_RUNNING}" == "true" ]]; then
   info "HTTP API:     https://${API_HOSTNAME}${PORT_SUFFIX}"
   info "Web Console:  https://${CONSOLE_HOSTNAME}${PORT_SUFFIX}"
   info "Health:       https://${HEALTH_HOSTNAME}${PORT_SUFFIX}"
+  info "Metrics:      https://${METRICS_HOSTNAME}${PORT_SUFFIX}/metrics"
 
   if [[ -z "${KIND_KEYCLOAK_URL:-}" ]]; then
     info "Keycloak:     https://${KEYCLOAK_HOSTNAME}${PORT_SUFFIX} (admin/admin)"
@@ -792,6 +805,7 @@ else
   info "HTTP API:     http://localhost:8000"
   info "Web Console:  http://localhost:3000"
   info "Health:       http://localhost:8000/healthz"
+  info "Metrics:      http://localhost:4433/metrics"
 
   if [[ -z "${KIND_KEYCLOAK_URL:-}" ]]; then
     info "Keycloak:     http://localhost:8080 (admin/admin)"
