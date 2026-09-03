@@ -247,13 +247,14 @@ fi
 # them at start (imagePullPolicy IfNotPresent) with no build or pre-load step.
 
 # --- Apply pull secret (if configured) ---
-if [[ -n "${KIND_PULL_SECRET:-}" ]]; then
+_pull_secret="$(printf '%s' "${PULL_SECRET:-${KIND_PULL_SECRET:-}}")"
+if [[ -n "${_pull_secret}" ]]; then
   header "Pull Secret"
   kube create namespace "${KIND_NAMESPACE}" --dry-run=client -o yaml | \
     kube apply -f -
-  info "Applying pull secret from ${KIND_PULL_SECRET}..."
-  kube apply -f "${KIND_PULL_SECRET}" -n "${KIND_NAMESPACE}"
-  SECRET_NAME=$(kube get -f "${KIND_PULL_SECRET}" -n "${KIND_NAMESPACE}" -o jsonpath='{.metadata.name}')
+  info "Applying pull secret from ${_pull_secret}..."
+  kube apply -f "${_pull_secret}" -n "${KIND_NAMESPACE}"
+  SECRET_NAME=$(kube get -f "${_pull_secret}" -n "${KIND_NAMESPACE}" -o jsonpath='{.metadata.name}')
   if [[ -n "${SECRET_NAME}" ]]; then
     info "Waiting for default ServiceAccount in ${KIND_NAMESPACE}..."
     for i in $(seq 1 30); do
@@ -749,12 +750,12 @@ echo ""
 # --- Seed platform resources via REST API ---
 # Seeding lives in seed.sh so CI can run it AFTER the component image swap
 # (see scripts/kind/seed.sh). Local runs seed inline by default; CI sets
-# KIND_SKIP_SEED=true here and runs `make kind-seed` once the swapped-in
+# SKIP_SEED=true here and runs `make kind-seed` once the swapped-in
 # working-tree images are live, so the seed exercises the branch's own request
 # contract instead of the baseline placeholder image kind-up deploys first.
-if [[ "${KIND_SKIP_SEED:-}" == "true" ]]; then
+if skip_seed; then
   header "Gateway Provisioning"
-  info "KIND_SKIP_SEED=true - deferring platform seeding (run 'make kind-seed')"
+  info "SKIP_SEED=true - deferring platform seeding (run 'make kind-seed')"
   echo ""
 else
   "${SCRIPT_DIR}/seed.sh"

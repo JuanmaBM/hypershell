@@ -2,11 +2,12 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -25,6 +26,7 @@ import (
 	"github.com/openshift-online/hypershell/components/control-plane/internal/reconciler"
 	"github.com/openshift-online/hypershell/components/control-plane/internal/serviceaccountkeycloak"
 	"github.com/openshift-online/hypershell/components/control-plane/internal/serviceaccountprovisioner"
+	"github.com/openshift-online/hypershell/components/control-plane/internal/supervisor"
 	"github.com/openshift-online/hypershell/components/control-plane/internal/watcher"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +34,11 @@ import (
 )
 
 const defaultManifestsDir = "/manifests/gateway"
+
+// instanceLabelBackfillTimeout bounds the one-shot startup backfill that stamps
+// this instance's identity label onto its legacy gateway namespaces, so a stalled
+// API server or apiserver cannot delay the GC reconciler's launch indefinitely.
+const instanceLabelBackfillTimeout = 2 * time.Minute
 
 func managedDatabaseWatchEligible(clientset *kubernetes.Clientset, dynamicClient dynamic.Interface) bool {
 	return clientset != nil && dynamicClient != nil
@@ -166,7 +173,7 @@ func main() {
 	clusterReconciler := reconciler.NewManagedClusterReconciler()
 	var databaseReconciler watcher.Handler[*pb.ManagedDatabase]
 	if managedDatabaseWatchEligible(clientset, dynamicClient) {
-		databaseReconciler = reconciler.NewManagedDatabaseReconciler(dynamicClient, clientset, conn)
+		databaseReconciler = reconciler.NewManagedDatabaseReconciler(dynamicClient, clientset, conn, cfg.Namespace)
 	} else {
 		log.Printf("WARN ManagedDatabase watch disabled: both Kubernetes typed and dynamic clients are required")
 	}
@@ -235,32 +242,54 @@ func main() {
 	if roleBindingReconciler != nil {
 		watchCount++
 	}
-	// +4 for the continuous gateway health, namespace GC, sandbox-count, and
-	// internal service-account provisioner goroutines.
-	errCh := make(chan error, watchCount+4)
+
+	// Each background component below runs under supervisor.Run on its own
+	// goroutine: a failure in one (a dropped watch stream, a reconciler's Run
+	// loop returning, the service-account provisioner's listener dying) is
+	// logged and retried in place, and never takes the others down with it.
+	// wg lets main block until every component has actually observed ctx
+	// cancellation and returned, instead of exiting out from under them.
+	var wg sync.WaitGroup
+	supervise := func(name string, fn func(context.Context) error) {
+		wg.Go(func() {
+			supervisor.Run(ctx, name, fn)
+		})
+	}
 
 	if cfg.ServiceAccountProvisionerAddress != "" {
 		provisionerServer := serviceaccountprovisioner.NewServer(serviceAccountProvider)
 		transportConfig := serviceaccountprovisioner.TransportConfig{
 			Address: cfg.ServiceAccountProvisionerAddress,
 		}
-		go func() {
-			errCh <- serviceaccountprovisioner.ListenAndServe(ctx, transportConfig, provisionerServer)
-		}()
+		supervise("service-account provisioner", func(ctx context.Context) error {
+			return serviceaccountprovisioner.ListenAndServe(ctx, transportConfig, provisionerServer)
+		})
 		log.Printf("INFO service-account provisioner launched on %s (in-cluster, NetworkPolicy-restricted)", cfg.ServiceAccountProvisionerAddress)
 	} else {
 		log.Printf("INFO service-account provisioner disabled")
 	}
 
-	go func() { errCh <- watcher.WatchManagedClusters(ctx, conn, clusterReconciler) }()
+	supervise("ManagedCluster watch", func(ctx context.Context) error {
+		return watcher.WatchManagedClusters(ctx, conn, clusterReconciler)
+	})
 	if databaseReconciler != nil {
-		go func() { errCh <- watcher.WatchManagedDatabases(ctx, conn, databaseReconciler) }()
+		supervise("ManagedDatabase watch", func(ctx context.Context) error {
+			return watcher.WatchManagedDatabases(ctx, conn, databaseReconciler)
+		})
 	}
-	go func() { errCh <- watcher.WatchGatewayReleases(ctx, conn, releaseReconciler) }()
-	go func() { errCh <- watcher.WatchGateways(ctx, conn, gatewayReconciler) }()
-	go func() { errCh <- watcher.WatchGatewayNetworks(ctx, conn, networkReconciler) }()
+	supervise("GatewayRelease watch", func(ctx context.Context) error {
+		return watcher.WatchGatewayReleases(ctx, conn, releaseReconciler)
+	})
+	supervise("Gateway watch", func(ctx context.Context) error {
+		return watcher.WatchGateways(ctx, conn, gatewayReconciler)
+	})
+	supervise("GatewayNetwork watch", func(ctx context.Context) error {
+		return watcher.WatchGatewayNetworks(ctx, conn, networkReconciler)
+	})
 	if roleBindingReconciler != nil {
-		go func() { errCh <- watcher.WatchRoleBindings(ctx, conn, roleBindingReconciler) }()
+		supervise("RoleBinding watch", func(ctx context.Context) error {
+			return watcher.WatchRoleBindings(ctx, conn, roleBindingReconciler)
+		})
 	}
 
 	log.Printf("INFO all %d watch streams launched", watchCount)
@@ -270,7 +299,7 @@ func main() {
 	// It requires an in-cluster Kubernetes client to observe Deployments.
 	if clientset != nil {
 		healthReconciler := reconciler.NewGatewayHealthReconciler(clientset, dynamicClient, conn, exposurePort, keycloakConfig)
-		go func() { errCh <- healthReconciler.Run(ctx) }()
+		supervise("gateway health reconciler", healthReconciler.Run)
 		log.Printf("INFO gateway health reconciler launched")
 	} else {
 		log.Printf("WARN no kubernetes client available, gateway health reconciliation disabled")
@@ -282,7 +311,7 @@ func main() {
 	// in-cluster Kubernetes client to watch pods.
 	if clientset != nil {
 		sandboxCountReconciler := reconciler.NewSandboxCountReconciler(clientset, conn, 0)
-		go func() { errCh <- sandboxCountReconciler.Run(ctx) }()
+		supervise("sandbox count reconciler", sandboxCountReconciler.Run)
 		log.Printf("INFO sandbox count reconciler launched")
 	} else {
 		log.Printf("WARN no kubernetes client available, sandbox count reconciliation disabled")
@@ -293,23 +322,30 @@ func main() {
 	// while the control plane was down, or a gateway that failed to bootstrap).
 	// It requires an in-cluster Kubernetes client.
 	if clientset != nil && cfg.NamespaceGCEnabled {
+		// Before the first sweep, backfill this instance's identity label onto the
+		// legacy gateway namespaces it still owns per its API server. A Gateway in
+		// a steady-state phase is skipped by the reconciler's phase gate on start,
+		// so its pre-label namespace is otherwise never migrated and a later
+		// missed-delete would leak it past the instance-scoped sweep. This runs
+		// synchronously so the first sweep sees the freshly-labeled namespaces; it
+		// is best-effort and never blocks startup on failure.
+		backfillCtx, cancelBackfill := context.WithTimeout(ctx, instanceLabelBackfillTimeout)
+		reconciler.RunInstanceLabelBackfill(backfillCtx, clientset, conn, cfg.Namespace)
+		cancelBackfill()
+
 		gcReconciler := reconciler.NewNamespaceGCReconciler(
 			clientset, conn, cfg.NamespaceGCInterval, cfg.NamespaceGCGracePeriod, cfg.Namespace,
 		)
-		go func() { errCh <- gcReconciler.Run(ctx) }()
+		supervise("namespace GC reconciler", gcReconciler.Run)
 		log.Printf("INFO namespace GC reconciler launched (interval=%s grace=%s)",
 			cfg.NamespaceGCInterval, cfg.NamespaceGCGracePeriod)
 	} else if clientset != nil {
 		log.Printf("INFO namespace GC reconciler disabled (GATEWAY_NAMESPACE_GC_ENABLED=false)")
 	}
 
-	watchErr := <-errCh
-	cancel()
-
-	if watchErr != nil && watchErr != context.Canceled {
-		fmt.Fprintf(os.Stderr, "fatal: %v\n", watchErr)
-		os.Exit(1)
-	}
+	<-ctx.Done()
+	log.Printf("INFO shutdown signal received, waiting for background components to stop")
+	wg.Wait()
 
 	log.Printf("INFO hypershell-controller stopped")
 }

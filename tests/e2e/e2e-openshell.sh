@@ -5,17 +5,19 @@
 # Proves the full path: HyperShell API -> control plane -> gateway provisioning
 # -> openshell CLI -> sandbox pod creation + interaction.
 #
-# The E2E_INFRA_DRIVER environment variable selects the infrastructure driver.
-# Each driver (tests/e2e/drivers/<driver>.sh) implements a fixed set of
-# functions that abstract infrastructure-specific operations.
+# The infrastructure driver is auto-detected from the current KUBECONFIG
+# context: a cluster that serves the route.openshift.io API group is
+# OpenShift, otherwise Kind is assumed. Set E2E_INFRA_DRIVER to override
+# detection. Each driver (tests/e2e/drivers/<driver>.sh) implements a fixed
+# set of functions that abstract infrastructure-specific operations.
 #
 # Usage:
-#   E2E_INFRA_DRIVER=kind bash tests/e2e/e2e-openshell.sh
+#   bash tests/e2e/e2e-openshell.sh
 #   OPENSHIFT_NAMESPACE=my-env E2E_INFRA_DRIVER=openshift \
-#     bash tests/e2e/e2e-openshell.sh
+#     bash tests/e2e/e2e-openshell.sh   # override detection
 #
 # Environment variables:
-#   E2E_INFRA_DRIVER      (required) Infra driver: kind or openshift
+#   E2E_INFRA_DRIVER      Infra driver override: kind, openshift (default: auto-detected)
 #   E2E_NAMESPACE          Namespace for e2e resources (default: openshell-e2e)
 #   E2E_GATEWAY_NAME       Gateway name (default: e2e-gw)
 #   E2E_MODE               Run depth: long (default, every step) or short (essential steps)
@@ -46,8 +48,20 @@ DB_PROVIDER="${DATABASE_PROVIDER:-deployment}"
 
 e2e_validate_mode
 
+# Detects OpenShift by checking whether the current KUBECONFIG context serves
+# the route.openshift.io API group, an API only OpenShift clusters expose.
+# Any other cluster is assumed to be Kind.
+detect_infra_driver() {
+  if kubectl api-versions 2>/dev/null | grep -q '^route\.openshift\.io/'; then
+    echo "openshift"
+  else
+    echo "kind"
+  fi
+}
+
 if [[ -z "${E2E_INFRA_DRIVER:-}" ]]; then
-  e2e_die_unknown_driver "E2E_INFRA_DRIVER is not set."
+  E2E_INFRA_DRIVER="$(detect_infra_driver)"
+  dim "  Detected infra driver: ${E2E_INFRA_DRIVER} (from KUBECONFIG context; set E2E_INFRA_DRIVER to override)"
 fi
 
 DRIVER_FILE="${SCRIPT_DIR}/drivers/${E2E_INFRA_DRIVER}.sh"
@@ -493,6 +507,7 @@ metadata:
   labels:
     hypershell.redhat.io/managed: "true"
     app.kubernetes.io/managed-by: hypershell-control-plane
+    hypershell.redhat.io/instance: "${E2E_HS_NAMESPACE}"
   annotations:
     hypershell.redhat.io/gc-eligible-since: "${ORPHAN_ELIGIBLE_SINCE}"
 EOF
@@ -1650,8 +1665,9 @@ else
   # Deleting the Gateway via the API drives the control-plane delete path
   # (watch-delete-events.spec.md): DeleteGatewayResources then
   # DeleteManagedNamespace, best-effort and idempotent. The gateway namespace is
-  # managed (carries both hypershell.redhat.io/managed=true and
-  # app.kubernetes.io/managed-by=hypershell-control-plane), so it MUST be reaped.
+  # managed (carries hypershell.redhat.io/managed=true,
+  # app.kubernetes.io/managed-by=hypershell-control-plane, and
+  # hypershell.redhat.io/instance=<this control plane>), so it MUST be reaped.
   # Any namespace missed by the delete path is later swept by the
   # NamespaceGCReconciler. See openshell-gateway-namespace-gc.spec.md
   # (HYPERSHELL-96, HYPERSHELL-78).

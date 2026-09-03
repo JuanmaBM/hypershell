@@ -3,8 +3,8 @@
 **Date:** 2026-08-10
 **Status:** Draft
 **Jira:** HYPERSHELL-18
-**Related:** `local-development.spec.md` -- Kind cluster setup;
-             `openshift-development.spec.md` (HYPERSHELL-44) -- `make openshift-*` lifecycle, blessed `deploy/openshift/` overlay, cluster infrastructure bootstrap, OpenShift CI (this spec partially implements HYPERSHELL-44 by delivering the OpenShift e2e driver);
+**Related:** `local-development.spec.md` -- Kind cluster setup and the shared `scripts/cluster/` lifecycle dispatcher;
+             `openshift-development.spec.md` (HYPERSHELL-44) -- `make openshift-*` lifecycle, blessed `deploy/openshift/` overlay, cluster infrastructure bootstrap, OpenShift CI (this spec owns the e2e driver interface and the OpenShift e2e driver; that spec owns bring-up);
              `control-plane.spec.md` -- reconciler behavior;
              `openshell-gateway-routing.spec.md` -- GRPCRoute provisioning;
              `openshell-gateway-namespace-gc.spec.md` -- gateway deletion + namespace GC;
@@ -20,9 +20,9 @@ HyperShell also needs a **performance test**. The performance test measures how 
 
 ### Scope
 
-This spec covers the **e2e driver interface contract** (for all targets), the **Kind driver**, the **OpenShift e2e driver** (delivered here as a partial implementation of HYPERSHELL-44), the **Kind-based CI workflow**, and the **infra-agnostic performance test**.
+This spec covers the **e2e driver interface contract** (for all targets), the **Kind driver**, the **OpenShift e2e driver**, the **Kind-based CI workflow**, and the **infra-agnostic performance test**.
 
-This spec **partially implements** `openshift-development.spec.md` (HYPERSHELL-44): it delivers the driver interface contract for all targets and the **OpenShift e2e driver** (`tests/e2e/drivers/openshift.sh`) so a user can run `make e2e` and `make e2e-performance` **manually** against any OpenShift cluster the user is already logged in to (via `oc login`) -- the target environment for scale and performance testing. The remainder of HYPERSHELL-44 -- the `make openshift-*` lifecycle, the **blessed `deploy/openshift/` overlay**, the **cluster infrastructure bootstrap**, and the **automated OpenShift CI workflow** -- stays in that spec and is not duplicated here. Because the driver ships with this spec, the OpenShift-run requirements below are meetable here rather than deferred.
+This spec owns the driver interface contract and the **OpenShift e2e driver** (`tests/e2e/drivers/openshift.sh`) so a user can run `make e2e` and `make e2e-performance` **manually** against any OpenShift cluster the user is already logged in to (via `oc login`) -- the target environment for scale and performance testing. Bring-up is a precondition: `make openshift-up` (specified in `openshift-development.spec.md`) deploys the blessed `deploy/openshift/` overlay into the current `oc` project (`OPENSHIFT_NAMESPACE` overrides), companion `${OPENSHIFT_NAMESPACE}-keycloak`, and the per-environment `${OPENSHIFT_NAMESPACE}-dev-*` cluster-scoped RBAC. This spec does not duplicate that lifecycle. An automated OpenShift CI job and the consolidation of `components/pr-test/e2e-openshell.sh` remain in HYPERSHELL-44.
 
 An automated OpenShift CI job is **out of scope** here; it belongs to HYPERSHELL-44. In this spec, OpenShift runs are manual and on-demand, and only the Kind e2e workflow runs in CI.
 
@@ -33,10 +33,11 @@ tests/e2e/e2e-openshell.sh (infra-agnostic test logic)
     │
     ├── sources tests/e2e/lib.sh (shared utilities)
     │
-    └── sources driver via E2E_INFRA_DRIVER (required)
+    └── selects driver by auto-detecting the KUBECONFIG context
+        (E2E_INFRA_DRIVER overrides detection)
         │
         ├── tests/e2e/drivers/kind.sh         (this spec)
-        └── tests/e2e/drivers/openshift.sh    (this spec; partial HYPERSHELL-44)
+        └── tests/e2e/drivers/openshift.sh    (this spec)
 ```
 
 The driver model separates test logic from infrastructure mechanics. The main test script calls a fixed set of driver functions; each driver implements those functions for its target infrastructure. Adding a new infrastructure target requires only a new driver file.
@@ -49,7 +50,7 @@ Each driver exports shell functions that abstract infrastructure-specific operat
 |----------|---------|---------------------|--------------------------|
 | `discover_api_host` | Find the HyperShell API server URL | HTTPRoute hostname `api.hypershell.localhost` or port-forward to `svc/hypershell-api-server` | `oc get route hypershell-api -o jsonpath='{.spec.host}'` |
 | `discover_gateway_endpoint` | Find the gateway gRPC endpoint | GRPCRoute hostname `<gw-name>.gw.localhost` via Gateway status address | GRPCRoute hostname via shared Gateway `Programmed=True` (Gateway API, not a per-gateway Route) |
-| `get_cluster_domain` | Get the base domain for constructing gateway DNS names | `gw.localhost` (static, matching `GATEWAY_API_BASE_DOMAIN` in `deploy/kind/`) | Configured `GATEWAY_API_BASE_DOMAIN` (not the cluster apps domain) |
+| `get_cluster_domain` | Get the base domain for constructing gateway DNS names | `gw.localhost` (static, matching `GATEWAY_API_BASE_DOMAIN` in `deploy/kind/`) | Gateway base domain derived from the shared Gateway listener hostname -- the same value `make openshift-up` sets on the control plane. Not a developer-supplied `GATEWAY_API_BASE_DOMAIN`, and not the cluster apps domain |
 | `get_cli_binary` | Return the Kubernetes CLI binary path | `kubectl` | `oc` |
 | `wait_for_gateway_route` | Block until the gateway is externally reachable | Check Gateway API Gateway status conditions and GRPCRoute parent status | Check Gateway `Programmed=True` and GRPCRoute parent `Accepted=True` |
 | `acquire_oidc_token` | Obtain an OIDC access token for a given user, stored in `_OIDC_ACCESS_TOKEN` for `api_curl` to use | Resource-owner password grant against Keycloak at `keycloak.hypershell.localhost`, trusting the Kind self-signed CA (`curl -k`) | Resource-owner password grant against the HyperShell Keycloak at its Route in the `${OPENSHIFT_NAMESPACE}-keycloak` namespace, in the `hypershell` realm, trusting the cluster CA |
@@ -119,7 +120,9 @@ deploy/
       kustomization.yaml
   openshift/                ← OpenShift overlay (extends base)
     kustomization.yaml      ← references ../base
-    route.yaml
+    route.yaml              ← API + web-console Routes
+    keycloak-route.yaml
+    keycloak-networkpolicy.yaml  ← platform pods may reach Keycloak JWKS/Admin API
     scc.yaml
     certificates.yaml
     networkpolicies.yaml
@@ -132,34 +135,38 @@ deploy/
 
 ### Requirement: Infra Driver Abstraction
 
-The e2e test framework SHALL isolate infrastructure-specific logic into driver scripts located at `tests/e2e/drivers/<driver>.sh`. The main test script (`tests/e2e/e2e-openshell.sh`) SHALL remain infrastructure-agnostic and call only driver interface functions for infrastructure-specific operations. The `E2E_INFRA_DRIVER` environment variable SHALL select the driver and MUST be set -- the script SHALL exit with an error if it is unset.
+The e2e test framework SHALL isolate infrastructure-specific logic into driver scripts located at `tests/e2e/drivers/<driver>.sh`. The main test script (`tests/e2e/e2e-openshell.sh`) SHALL remain infrastructure-agnostic and call only driver interface functions for infrastructure-specific operations. Only `kind` and `openshift` drivers are supported today; additional drivers are follow-up work.
 
-#### Scenario: Kind Driver Selected
+The script SHALL auto-detect the driver from the current KUBECONFIG context rather than require the caller to select one: it SHALL query the cluster's API groups and select `openshift` when `route.openshift.io` is present, and `kind` otherwise. The `E2E_INFRA_DRIVER` environment variable SHALL override auto-detection when set. A user SHALL be able to run the suite with no infra-related environment variables and have it correctly select the driver matching the cluster their KUBECONFIG context points at.
 
-- GIVEN `E2E_INFRA_DRIVER=kind`
+#### Scenario: Kind Driver Auto-Detected
+
+- GIVEN the current KUBECONFIG context points at a cluster that does not serve the `route.openshift.io` API group
+- AND `E2E_INFRA_DRIVER` is not set
 - WHEN the e2e test script starts
 - THEN the `tests/e2e/drivers/kind.sh` driver SHALL be sourced
 - AND all infrastructure functions SHALL use `kubectl` and Kind-specific discovery (HTTPRoute hostnames, Gateway API status)
 
-#### Scenario: OpenShift Driver Selected
+#### Scenario: OpenShift Driver Auto-Detected
 
-- GIVEN `E2E_INFRA_DRIVER=openshift`
+- GIVEN the current KUBECONFIG context points at a cluster that serves the `route.openshift.io` API group
+- AND `E2E_INFRA_DRIVER` is not set
 - WHEN the e2e test script starts
 - THEN the `tests/e2e/drivers/openshift.sh` driver SHALL be sourced
 - AND all infrastructure functions SHALL use `oc` and OpenShift-specific discovery as `openshift-development.spec.md` defines (Gateway API status and the configured gateway base domain)
+
+#### Scenario: Driver Override
+
+- GIVEN the current KUBECONFIG context points at a cluster that would auto-detect to a different driver
+- AND `E2E_INFRA_DRIVER` is set explicitly
+- WHEN the e2e test script starts
+- THEN the script SHALL source the driver `E2E_INFRA_DRIVER` names, bypassing auto-detection
 
 #### Scenario: New Driver Extensibility
 
 - GIVEN a developer creates `tests/e2e/drivers/eks.sh` implementing all interface functions
 - WHEN a user runs the e2e tests with `E2E_INFRA_DRIVER=eks`
-- THEN the tests SHALL execute against EKS without modifying the main test script
-
-#### Scenario: Driver Not Set
-
-- GIVEN `E2E_INFRA_DRIVER` is not set
-- WHEN the e2e test script starts
-- THEN the script SHALL exit with a non-zero status
-- AND print a message listing available drivers from `tests/e2e/drivers/*.sh`
+- THEN the tests SHALL execute against EKS without modifying the main test script or the auto-detection logic
 
 #### Scenario: Unknown Driver
 
@@ -170,7 +177,7 @@ The e2e test framework SHALL isolate infrastructure-specific logic into driver s
 
 ### Requirement: Driver Interface Contract
 
-Each driver script SHALL export the following shell functions. The main test script SHALL call only these functions for infrastructure-specific operations. A driver that does not implement all required functions SHALL cause the test script to exit with an error at startup. This spec defines the contract for all drivers and covers the Kind driver implementation. The OpenShift implementation of this contract (the `oc` commands, Route discovery, cluster-domain lookup, and OIDC issuer derivation) is specified in `openshift-development.spec.md` (HYPERSHELL-44); the table below is the contract it implements.
+Each driver script SHALL export the following shell functions. The main test script SHALL call only these functions for infrastructure-specific operations. A driver that does not implement all required functions SHALL cause the test script to exit with an error at startup. This spec defines the contract for all drivers and covers the Kind driver implementation. The OpenShift implementation of this contract (the `oc` commands, Route discovery, gateway-base-domain lookup from the shared Gateway listener, and OIDC issuer derivation from the Keycloak Route) is specified in `openshift-development.spec.md` (HYPERSHELL-44); the table below is the contract it implements.
 
 #### Scenario: API Host Discovery -- Kind
 
@@ -207,15 +214,15 @@ Each driver script SHALL export the following shell functions. The main test scr
 - AND verify the corresponding GRPCRoute's parent status reports `Accepted=True`
 - AND return success when both conditions are met or fail after `E2E_PROVISION_TIMEOUT` seconds
 
-The OpenShift driver implements the same ten functions with OpenShift constructs (Route host for `discover_api_host`, GRPCRoute hostname via the shared Gateway with `Programmed=True` for `discover_gateway_endpoint`, the configured `GATEWAY_API_BASE_DOMAIN` for `get_cluster_domain`, `oc` for `get_cli_binary`, Gateway `Programmed=True` plus GRPCRoute parent `Accepted=True` for `wait_for_gateway_route`, the HyperShell Keycloak reached at its Route in the `${OPENSHIFT_NAMESPACE}-keycloak` namespace for `acquire_oidc_token` and `api_curl`, and that same Keycloak's admin API for the `assign_gateway_client_role`, `assign_realm_role`, and `acquire_gateway_token_with_role` role helpers), as the interface table above shows. This spec delivers the OpenShift driver as a partial implementation of `openshift-development.spec.md` (HYPERSHELL-44), which is what makes the manual OpenShift runs defined next implementable here; HYPERSHELL-44 owns the surrounding `make openshift-*` lifecycle, `deploy/openshift/` overlay, cluster bootstrap, and automated CI.
+The OpenShift driver implements the same ten functions with OpenShift constructs (Route host for `discover_api_host`, GRPCRoute hostname via the shared Gateway with `Programmed=True` for `discover_gateway_endpoint`, the gateway base domain `make openshift-up` derived from the shared Gateway listener hostname for `get_cluster_domain`, `oc` for `get_cli_binary`, Gateway `Programmed=True` plus GRPCRoute parent `Accepted=True` for `wait_for_gateway_route`, the HyperShell Keycloak reached at its Route in the `${OPENSHIFT_NAMESPACE}-keycloak` namespace for `acquire_oidc_token` and `api_curl`, and that same Keycloak's admin API for the `assign_gateway_client_role`, `assign_realm_role`, and `acquire_gateway_token_with_role` role helpers), as the interface table above shows. `openshift-development.spec.md` owns bring-up (`make openshift-up`, the overlay, cluster bootstrap); this spec owns the driver the suite calls after that environment exists. Automated OpenShift CI remains in HYPERSHELL-44.
 
 ### Requirement: Custom OpenShift Runs
 
-Each target SHALL default `E2E_INFRA_DRIVER` to `kind` and SHALL honor a command-line override. A user SHALL be able to run `make e2e` and `make e2e-performance` **manually** against any OpenShift cluster, so scale and performance testing can target a real OpenShift environment: a user SHALL run `E2E_INFRA_DRIVER=openshift make e2e` or `E2E_INFRA_DRIVER=openshift make e2e-performance` against the cluster their current `oc` context selects. This spec delivers the OpenShift driver (`tests/e2e/drivers/openshift.sh`) as a partial implementation of HYPERSHELL-44, so these runs are implementable here rather than deferred to that spec. These OpenShift runs SHALL NOT create a cluster and SHALL NOT create a namespace beyond the gateways the suite provisions; the environment is a precondition.
+Each target SHALL auto-detect the driver from the current KUBECONFIG context (see [Infra Driver Abstraction](#requirement-infra-driver-abstraction)) and SHALL honor an `E2E_INFRA_DRIVER` command-line override. A user SHALL be able to run `make e2e` and `make e2e-performance` **manually** against any OpenShift cluster, so scale and performance testing can target a real OpenShift environment: a user logged in to an OpenShift cluster via `oc login` SHALL run `make e2e` or `make e2e-performance` and have the suite auto-detect the OpenShift driver, or force it explicitly with `E2E_INFRA_DRIVER=openshift make e2e` / `E2E_INFRA_DRIVER=openshift make e2e-performance`. These OpenShift runs SHALL NOT create a cluster and SHALL NOT create a namespace beyond the gateways the suite provisions; the environment is a precondition.
 
-**Preconditions (owned by HYPERSHELL-44).** These runs assume HyperShell is already deployed on the cluster through `kustomize build deploy/openshift/` (for example via `make openshift-up`), and that the cluster infrastructure bootstrap (shared Gateway, GatewayClass, certificate issuer, wildcard certificate) is in place per `openshift-development.spec.md`. The suite SHALL fail with a clear error, not a broken run, when the API Route or the gateway infrastructure is absent.
+**Preconditions (owned by `openshift-development.spec.md`).** These runs assume HyperShell is already deployed on the cluster through `make openshift-up` (`kustomize build deploy/openshift/` mapped into the current `oc` project, or `OPENSHIFT_NAMESPACE`). That bring-up creates the companion `${OPENSHIFT_NAMESPACE}-keycloak` project, applies Routes for the API, web console, and Keycloak, applies `keycloak-allow-platform` so platform pods can reach JWKS, applies per-environment ClusterRoles and ClusterRoleBindings named `${OPENSHIFT_NAMESPACE}-dev-*`, and applies the privileged SCC RoleBinding `hypershell-sandbox-scc`. The cluster infrastructure bootstrap (shared Gateway, GatewayClass, certificate issuer, wildcard certificate) is in place per `openshift-development.spec.md`. The suite SHALL fail with a clear error, not a broken run, when the API Route or the gateway infrastructure is absent.
 
-**Driver behavior needed for parity.** For the shared suite to pass on OpenShift, the OpenShift driver SHALL derive the OIDC issuer and related OIDC variables from the running cluster's domain (not the Kind default `keycloak.hypershell.localhost`), and SHALL provide the same Keycloak admin and role-assignment helpers the Kind driver provides, so the RBAC areas (developer and platform-admin) run unchanged. The OpenShift deployment SHALL enforce RBAC (`RBAC_ENFORCE=true`) and SHALL keep the OpenShift SCC posture (per-namespace privileged SCC for sandbox pods), so the sandbox and RBAC areas behave the same as on Kind. These behaviors are specified in HYPERSHELL-44; this spec only depends on them.
+**Driver behavior needed for parity.** For the shared suite to pass on OpenShift, the OpenShift driver SHALL use the current `oc` project when `OPENSHIFT_NAMESPACE` is unset (and fail clearly when neither is available), matching `make openshift-up`; derive the OIDC issuer from the Keycloak Route in `${OPENSHIFT_NAMESPACE}-keycloak` (not the Kind default `keycloak.hypershell.localhost`); return `get_cluster_domain` from the same shared-Gateway listener hostname `make openshift-up` used; and provide the same Keycloak admin and role-assignment helpers the Kind driver provides, so the RBAC areas (developer and platform-admin) run unchanged. The OpenShift deployment SHALL enforce RBAC (`RBAC_ENFORCE=true`) and SHALL keep the OpenShift SCC posture (per-namespace privileged SCC for sandbox pods), so the sandbox and RBAC areas behave the same as on Kind. These behaviors are specified in `openshift-development.spec.md`; this spec only depends on them.
 
 **Namespace GC timing.** Area 11 exercises the periodic namespace reaper. To make it pass on OpenShift without waiting the production GC defaults (5m sweep / 10m grace), the OpenShift deployment SHOULD set shortened `GATEWAY_NAMESPACE_GC_INTERVAL` and `GATEWAY_NAMESPACE_GC_GRACE_PERIOD` (as the Kind overlay does), or the user SHOULD raise `E2E_ORPHAN_GC_TIMEOUT` and `E2E_GC_TIMEOUT` to fit the cluster's configured timing.
 
@@ -223,17 +230,17 @@ Each target SHALL default `E2E_INFRA_DRIVER` to `kind` and SHALL honor a command
 
 #### Scenario: e2e Against OpenShift
 
-- GIVEN the OpenShift driver delivered by this spec is present at `tests/e2e/drivers/openshift.sh`
-- AND a user is logged in to an OpenShift cluster with HyperShell deployed (`deploy/openshift/`)
+- GIVEN the OpenShift driver is present at `tests/e2e/drivers/openshift.sh`
+- AND a user is logged in to an OpenShift cluster with HyperShell deployed via `make openshift-up`
 - AND the cluster infrastructure bootstrap is in place per `openshift-development.spec.md`
-- WHEN the user runs `E2E_INFRA_DRIVER=openshift make e2e`
+- WHEN the user runs `make e2e` with no `E2E_INFRA_DRIVER` set, or runs `E2E_INFRA_DRIVER=openshift make e2e` explicitly
 - THEN the suite SHALL run against that cluster using the OpenShift driver
 - AND no Kind cluster SHALL be created
 
 #### Scenario: Performance Against OpenShift
 
-- GIVEN the OpenShift driver delivered by this spec is present at `tests/e2e/drivers/openshift.sh`
-- AND a user is logged in to an OpenShift cluster with HyperShell deployed
+- GIVEN the OpenShift driver is present at `tests/e2e/drivers/openshift.sh`
+- AND a user is logged in to an OpenShift cluster with HyperShell deployed via `make openshift-up`
 - WHEN the user runs `E2E_INFRA_DRIVER=openshift make e2e-performance`
 - THEN the performance harness SHALL run against that cluster using the OpenShift driver
 - AND it SHALL provision the perf fleet on that cluster and report metrics
@@ -375,8 +382,9 @@ To exercise the periodic path without waiting for production defaults (5m sweep 
 short Go duration strings (for example `30s`; any positive value accepted by
 `time.ParseDuration` is valid). Immediately after gateway provisioning succeeds,
 the suite SHALL seed a synthetic orphaned managed namespace (`openshell-e2e-orphan-*`)
-labeled with both required management labels (`hypershell.redhat.io/managed=true`
-and `app.kubernetes.io/managed-by=hypershell-control-plane`) and a name matching
+labeled with the three required ownership labels (`hypershell.redhat.io/managed=true`,
+`app.kubernetes.io/managed-by=hypershell-control-plane`, and
+`hypershell.redhat.io/instance=<E2E_HS_NAMESPACE>`) and a name matching
 the gateway prefix (not `openshell-db-*`), annotate it with a
 backdated `hypershell.redhat.io/gc-eligible-since` timestamp so the next sweep can
 reap without waiting a full grace period. Steps 3–10 SHALL run while the periodic
@@ -412,7 +420,7 @@ removal of the in-namespace sandbox resources (see
 - GIVEN the Kind overlay has shortened `GATEWAY_NAMESPACE_GC_INTERVAL` and
   `GATEWAY_NAMESPACE_GC_GRACE_PERIOD` (for example `30s`)
 - AND a synthetic managed namespace was seeded after gateway provisioning with
-  both management labels, a gateway-style name, and a backdated
+  this instance's three ownership labels, a gateway-style name, and a backdated
   `hypershell.redhat.io/gc-eligible-since`
   annotation, with no live Gateway backing it
 - AND steps 3–10 have run while the periodic reaper may have deleted it
@@ -615,7 +623,9 @@ The `deploy/` directory SHALL use a kustomize base/overlay structure to support 
 - GIVEN `deploy/openshift/kustomization.yaml` references `../base` as a resource
 - WHEN `kustomize build deploy/openshift/` is executed
 - THEN the output SHALL include all base resources
-- AND OpenShift-specific resources: Route for the API server with edge TLS termination, SecurityContextConstraints bindings
+- AND OpenShift-specific resources: Routes for the API server, web console, and Keycloak with edge TLS termination; SecurityContextConstraints RoleBindings; `keycloak-allow-platform` NetworkPolicy so platform pods can reach Keycloak on TCP/8080
+- AND the API server Deployment SHALL set `API_ENV=development_oidc` (the overlay, not the lifecycle script)
+- AND `make openshift-up` SHALL rewrite overlay namespaces so `hypershell-system` maps to `OPENSHIFT_NAMESPACE` and `keycloak` maps to `${OPENSHIFT_NAMESPACE}-keycloak`, prefix cluster-scoped RBAC names with `${OPENSHIFT_NAMESPACE}-dev-`, and set the control plane `GATEWAY_API_BASE_DOMAIN` from the shared Gateway listener hostname
 
 #### Scenario: Base Resource Propagation
 
@@ -685,7 +695,9 @@ deploy/
       kustomization.yaml
   openshift/               -- OpenShift overlay (extends base)
     kustomization.yaml     -- references ../base
-    route.yaml
+    route.yaml             -- API + web-console Routes
+    keycloak-route.yaml
+    keycloak-networkpolicy.yaml
     scc.yaml
     certificates.yaml
     networkpolicies.yaml
@@ -702,7 +714,8 @@ deploy/
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `E2E_INFRA_DRIVER` | (required) | Infra driver to use: `kind`, `openshift` (OpenShift driver per HYPERSHELL-44) |
+| `E2E_INFRA_DRIVER` | (auto-detected from KUBECONFIG context) | Infra driver override: `kind` or `openshift` |
+| `OPENSHIFT_NAMESPACE` | current `oc project` | Platform namespace the OpenShift driver and `make openshift-up` target; Keycloak is `${OPENSHIFT_NAMESPACE}-keycloak` |
 | `E2E_NAMESPACE` | `openshell-e2e` | Namespace for e2e test resources (gateway deployment) |
 | `E2E_GATEWAY_NAME` | `e2e-gw` | Gateway name for the e2e test |
 | `E2E_MODE` | `long` | Run depth: `long` runs every step, `short` runs the essential steps of each area (see [E2E Short and Long Modes](#requirement-e2e-short-and-long-modes)) |
@@ -724,7 +737,7 @@ deploy/
 
 ### Requirement: OIDC Authentication in E2E Tests
 
-The e2e test suite SHALL run with OIDC authentication enabled. The CI workflow SHALL deploy the Kind cluster with `KIND_ENABLE_OIDC=true`. All API calls SHALL be authenticated with a Bearer token obtained from Keycloak. This ensures e2e tests exercise the same authentication path as production.
+The e2e test suite SHALL run with OIDC authentication enabled. `make kind-up` enables OIDC unconditionally (`API_ENV=development_oidc`); there is no `KIND_ENABLE_OIDC` toggle. All API calls SHALL be authenticated with a Bearer token obtained from Keycloak. This ensures e2e tests exercise the same authentication path as production.
 
 The test suite SHALL verify OIDC integration as part of its standard flow:
 1. Acquire a token from Keycloak and authenticate all API calls
@@ -764,7 +777,7 @@ The test suite SHALL verify OIDC integration as part of its standard flow:
 
 - GIVEN the CI e2e workflow
 - WHEN the Kind cluster is created
-- THEN `make kind-up` SHALL be invoked with `KIND_ENABLE_OIDC=true`
+- THEN `make kind-up` SHALL enable OIDC (the Kind overlay always sets `API_ENV=development_oidc`)
 
 ### Requirement: Web Console Distributed Trace Verification
 
@@ -794,7 +807,7 @@ The CI e2e workflow SHALL verify web console distributed tracing end to end, sat
 
 The performance test measures how the platform behaves when many gateways run at the same time. It provisions a large fleet of gateways on the target cluster in batches. After every batch it runs a fast mini test (the e2e suite in short mode against a canary gateway) and appends a checkpoint record to the results, so a regression is pinned to the scale at which it appears rather than surfacing only at the end. Once the fleet is fully provisioned it runs the full functional e2e suite to confirm the platform still works correctly under that load. A user runs the test with `make e2e-performance`.
 
-The performance test reuses the e2e driver abstraction. It runs against any infrastructure target that supplies a driver. A user selects the target with `E2E_INFRA_DRIVER`, the same as the e2e suite. A user runs the test against Kind for local checks. A user runs the test against any OpenShift cluster for on-demand load tests.
+The performance test reuses the e2e driver abstraction. It runs against any infrastructure target that supplies a driver. It auto-detects the target from the current KUBECONFIG context, the same as the e2e suite, with `E2E_INFRA_DRIVER` available as an override. A user runs the test against Kind for local checks. A user runs the test against any OpenShift cluster for on-demand load tests.
 
 The performance test does not build images and does not create the cluster. It targets a cluster that already runs. It reuses the resources that `make kind-up` (or the OpenShift deploy) already seeded: one managed cluster, one release, and (when `DATABASE_PROVIDER=cnpg`) one managed database. Each perf gateway create body reuses the cluster and release ids.
 
@@ -806,7 +819,8 @@ tests/e2e/e2e-performance.sh (infra-agnostic performance harness)
     ├── sources tests/e2e/lib.sh       (pass/fail tracking, retry, colors, env defaults)
     ├── sources tests/e2e/perf-lib.sh  (timing, latency percentiles, bounded concurrency)
     │
-    ├── sources driver via E2E_INFRA_DRIVER (required: kind | openshift)
+    ├── selects driver by auto-detecting the KUBECONFIG context
+    │   (E2E_INFRA_DRIVER overrides detection; kind | openshift)
     │
     ├── Phase 1  Preflight        -- discover API host, OIDC token, cluster/release ids, baseline;
     │                                provision the canary gateway and grant its OIDC role once
@@ -823,34 +837,34 @@ The harness holds no infrastructure-specific logic. It calls only driver interfa
 
 ### Requirement: Performance Test Entry Point
 
-The system SHALL provide a `make e2e-performance` target. The target SHALL run `tests/e2e/e2e-performance.sh`. The target SHALL default `E2E_INFRA_DRIVER` to `kind` for local use, the same pattern as the `make e2e` target. A user SHALL be able to override the driver on the command line. This lets the same target run against any OpenShift cluster (see [Custom OpenShift Runs](#requirement-custom-openshift-runs)).
+The system SHALL provide a `make e2e-performance` target. The target SHALL run `tests/e2e/e2e-performance.sh`. The target SHALL auto-detect the driver from the current KUBECONFIG context, the same pattern as the `make e2e` target. A user SHALL be able to override the driver on the command line with `E2E_INFRA_DRIVER`. This lets the same target run against any OpenShift cluster (see [Custom OpenShift Runs](#requirement-custom-openshift-runs)).
 
 #### Scenario: Local Kind Run
 
 - GIVEN a developer has a running Kind cluster from `make kind-up`
-- WHEN the developer runs `make e2e-performance`
-- THEN the harness SHALL run with `E2E_INFRA_DRIVER=kind`
+- WHEN the developer runs `make e2e-performance` with no `E2E_INFRA_DRIVER` set
+- THEN the harness SHALL auto-detect and run with the `kind` driver
 - AND it SHALL provision `E2E_PERF_GATEWAY_COUNT` gateways and report performance metrics
 
 #### Scenario: OpenShift Run
 
 - GIVEN a user is logged in to an OpenShift cluster with HyperShell deployed
-- AND the `openshift` driver is present at `tests/e2e/drivers/openshift.sh` (delivered by this spec)
-- WHEN the user runs `E2E_INFRA_DRIVER=openshift make e2e-performance`
+- AND the `openshift` driver is present at `tests/e2e/drivers/openshift.sh`
+- WHEN the user runs `make e2e-performance` with no `E2E_INFRA_DRIVER` set, or runs `E2E_INFRA_DRIVER=openshift make e2e-performance` explicitly
 - THEN the harness SHALL run against the OpenShift cluster with no change to the harness code
 - AND all infrastructure operations SHALL use the OpenShift driver (`oc`, Routes)
 
 ### Requirement: Infra-Agnostic Performance Harness
 
-The performance harness (`tests/e2e/e2e-performance.sh`) SHALL be infrastructure-agnostic. It SHALL call only the driver interface functions for infrastructure operations. It SHALL select the driver with `E2E_INFRA_DRIVER`, the same as the e2e suite. It SHALL exit with a non-zero status at startup if `E2E_INFRA_DRIVER` is unset or names a missing driver, and SHALL list the available drivers. It SHALL NOT contain any `kubectl`-only, `oc`-only, or `kind`-only command.
+The performance harness (`tests/e2e/e2e-performance.sh`) SHALL be infrastructure-agnostic. It SHALL call only the driver interface functions for infrastructure operations. It SHALL select the driver the same way the e2e suite does: auto-detected from the current KUBECONFIG context, with `E2E_INFRA_DRIVER` as an override. It SHALL exit with a non-zero status at startup if `E2E_INFRA_DRIVER` names a missing driver, and SHALL list the available drivers. It SHALL NOT contain any `kubectl`-only, `oc`-only, or `kind`-only command.
 
 The harness SHALL obtain the seeded cluster, release, and managed database ids the same way the e2e suite does: it SHALL query the API through `api_curl` and reuse the shared seeding helpers in `tests/e2e/lib.sh`, never hardcoding ids. When `E2E_SEED_CLUSTER_NAME` / `E2E_SEED_RELEASE_NAME` are set, discovery SHALL select the matching name; when they are unset it SHALL take the first list item (the single-seed Kind/CI layout). On `E2E_INFRA_DRIVER=kind` those names SHALL default to the `make kind-up` seeds (`local-kind`, `dev-release`). Every diagnostic or resource-inspection command SHALL invoke the Kubernetes CLI through `$(get_cli_binary)`, so it resolves to `kubectl` on Kind and `oc` on OpenShift with no change to the harness.
 
-The OpenShift driver is delivered by this spec as a partial implementation of `openshift-development.spec.md` (HYPERSHELL-44); the performance harness uses it for OpenShift runs (see [Scope](#scope)). The harness SHALL contain no infra-specific code: it works with either driver with no change. OpenShift runs are manual and on-demand; the performance test is not wired into CI for any target (see [Design Decisions](#design-decisions)).
+The OpenShift driver is specified alongside this contract in `openshift-development.spec.md`; the performance harness uses it for OpenShift runs (see [Scope](#scope)). The harness SHALL contain no infra-specific code: it works with either driver with no change. OpenShift runs are manual and on-demand; the performance test is not wired into CI for any target (see [Design Decisions](#design-decisions)).
 
-#### Scenario: Driver Not Set
+#### Scenario: Unknown Driver Override
 
-- GIVEN `E2E_INFRA_DRIVER` is not set
+- GIVEN `E2E_INFRA_DRIVER=nonexistent`
 - WHEN the performance harness starts
 - THEN it SHALL exit with a non-zero status
 - AND print the available drivers from `tests/e2e/drivers/*.sh`
@@ -1285,7 +1299,7 @@ On failure, the harness SHALL collect diagnostics that explain resource pressure
 | `E2E_PERF_CSV` | `0` | Set to `1` to also append each run to `<results-dir>/history.csv` |
 | `E2E_PERF_MIN_SUCCESS_RATE` | (unset) | Optional SLO: min provisioning success rate percent; below this fails the run |
 | `E2E_PERF_MAX_PROVISION_P99` | (unset) | Optional SLO: max p99 time-to-`Running` seconds; above this fails the run |
-| `E2E_INFRA_DRIVER` | (required; `make e2e-performance` defaults to `kind`) | Infra driver: `kind`, `openshift` (OpenShift driver per HYPERSHELL-44) |
+| `E2E_INFRA_DRIVER` | (auto-detected from KUBECONFIG context) | Infra driver override: `kind` or `openshift` |
 | `E2E_SKIP_CLEANUP` | `0` | Set to `1` to keep the perf fleet after the run |
 
 **Capacity note:** a small Kind cluster cannot run hundreds of gateways. Each gateway provisions a deployment, a service, a TLS secret, a certgen job, a per-gateway Keycloak client, and a managed namespace. A run also stands up the canary and the functional gateway, so the cluster carries `E2E_PERF_GATEWAY_COUNT + 2` gateway stacks at peak: the default of 5 means 7 stacks, which fits a typical Kind cluster. Keep the total modest on Kind (roughly `count + 2` at or below 10). Use a larger count on an OpenShift cluster that has spare capacity. The harness reports resource pressure on failure so a user can find the ceiling.
@@ -1295,7 +1309,7 @@ On failure, the harness SHALL collect diagnostics that explain resource pressure
 | Decision | Rationale |
 |----------|-----------|
 | Shell-based drivers as starting point | The e2e test is a shell script; shell functions provide the simplest driver abstraction without adding a new language or build step. Each driver is a single file implementing a known function interface. If the test suite grows in complexity -- structured assertions, parallel execution, direct Kubernetes API client usage -- migrating to a Go-based e2e framework (e.g., `go test` with client-go) is a natural follow-up. The driver interface contract is function-shape-agnostic, so the same logical abstraction applies in either language |
-| `E2E_INFRA_DRIVER` is required, no auto-detection | Explicit driver selection avoids ambiguity and makes CI invocations self-documenting. Each environment sets the driver it intends to test against |
+| `E2E_INFRA_DRIVER` is auto-detected from the KUBECONFIG context, with an explicit override | `route.openshift.io` is a reliable, cheap signal for OpenShift, so a developer running against whichever cluster their context selects does not need to remember to set a flag. CI still sets `E2E_INFRA_DRIVER=kind` explicitly so the invocation stays self-documenting and does not depend on the runner's kubeconfig |
 | Tests live in `tests/e2e/`, not `components/pr-test/` | A top-level `tests/` tree is the natural home for e2e tests and their drivers. `components/pr-test/` will be deprecated in a follow-up once migration is complete |
 | Shared test utilities in `tests/e2e/lib.sh` | Pass/fail tracking, color output, and retry helpers are currently inline in `e2e-openshell.sh`. Extracting them into `lib.sh` makes them reusable across future test scripts without duplicating code |
 | CI pulls Konflux-built images, not rebuild | Images are built by Konflux (the existing build pipeline). The e2e workflow gates on those builds and pulls images by digest, avoiding duplicate builds and ensuring CI tests the exact images that ship. This is expected to cover HYPERSHELL-16 |
@@ -1304,7 +1318,7 @@ On failure, the harness SHALL collect diagnostics that explain resource pressure
 | e2e workflow skips for irrelevant changes | SDK-only or docs-only PRs do not affect the e2e path. Skipping avoids CI time and Konflux build overhead. The `detect-components.sh` infrastructure tracks `api_server`, `control_plane`, `pr_test`, and `e2e` component paths for "should we re-run e2e" decisions. Separately, Konflux image builds only trigger on changes under `components/<name>/` source paths -- the workflow checks the actual diff to distinguish e2e-relevant infrastructure changes (which use baseline images) from source changes (which require Konflux-built images) |
 | `make kind-up` accepts image overrides | Passing `IMAGE_TAG=<digest>` or per-component image variables to `make kind-up` allows CI to deploy Konflux-built images directly without a separate load step. Developers can also use this to test specific image versions locally |
 | Backward-compatible migration | The refactoring does not change `make kind-up`. `scripts/kind/up.sh` can be migrated to use `kustomize build deploy/kind/` incrementally. The spec defines the target state; the migration path is incremental |
-| HYPERSHELL-18 partially implements HYPERSHELL-44 | This spec delivers two slices of `openshift-development.spec.md` (HYPERSHELL-44): the driver interface contract (both columns) and the OpenShift e2e driver (`tests/e2e/drivers/openshift.sh`), so `make e2e` and `make e2e-performance` run manually against any OpenShift cluster for scale and performance testing. Delivering the driver here keeps the manual-run requirement meetable instead of gating it on the rest of HYPERSHELL-44. The remainder -- the `make openshift-*` lifecycle, the `deploy/openshift/` overlay, the cluster infrastructure bootstrap, and the automated OpenShift CI job -- stays in HYPERSHELL-44 and is not duplicated here |
+| OpenShift e2e runs use `make openshift-up` as the environment | This spec owns the driver the suite calls. `openshift-development.spec.md` owns bring-up: `make openshift-up`, the `deploy/openshift/` overlay (Routes, Keycloak NetworkPolicy, SCC), namespace rewrite, `${OPENSHIFT_NAMESPACE}-dev-*` cluster RBAC, and cluster bootstrap. Automated OpenShift CI and `components/pr-test/` consolidation stay in HYPERSHELL-44 and are not duplicated here |
 | Env vars renamed with `E2E_` prefix | The existing `e2e-openshell.sh` uses `SANDBOX_TIMEOUT`, `PROVISION_TIMEOUT`, `SKIP_CLEANUP`, and `GATEWAY_NAMESPACE`. These are renamed to `E2E_SANDBOX_TIMEOUT`, `E2E_PROVISION_TIMEOUT`, `E2E_SKIP_CLEANUP`, and `E2E_NAMESPACE` to avoid namespace collisions with non-e2e configuration and make the e2e origin of these variables explicit |
 | CI uses `make kind-up`, not raw `kind create cluster` | Reuses the same cluster setup path developers use locally. Ensures the CI environment is identical to local development. Avoids a second "create a Kind cluster" implementation that could drift |
 | Performance harness reuses the e2e driver interface | The performance test needs the same cross-infrastructure portability as the e2e suite: run on Kind locally, run on any OpenShift cluster for on-demand load tests. Reusing the driver interface means the harness holds no infra-specific code and a new target needs only a new driver file. It also keeps one abstraction to maintain, not two |
