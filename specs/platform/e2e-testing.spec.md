@@ -713,6 +713,8 @@ deploy/
 | `E2E_SKIP_CLEANUP` | `0` | Set to `1` to keep test resources after run |
 | `E2E_OIDC_USERNAME` | `admin` | Admin OIDC user (member of `hypershell-admins` + `hypershell-users`) used for areas 1--8 and 11 |
 | `E2E_OIDC_PASSWORD` | `admin` | Password for the admin OIDC user (local dev only) |
+| `E2E_SEED_CLUSTER_NAME` | `local-kind` on kind; unset otherwise | Pin seed discovery to this managed-cluster name. Unset means the first list item |
+| `E2E_SEED_RELEASE_NAME` | `dev-release` on kind; unset otherwise | Pin seed discovery to this gateway-release name. Unset means the first list item |
 | `E2E_DEV_USERNAME` | `developer` | Standard OIDC user (`openshell-user` tier) used for the RBAC boundary assertions |
 | `E2E_DEV_PASSWORD` | `developer` | Password for the developer OIDC user (local dev only) |
 | `OPENSHELL_BIN` | `openshell` | Path to the openshell CLI binary |
@@ -794,7 +796,7 @@ The performance test measures how the platform behaves when many gateways run at
 
 The performance test reuses the e2e driver abstraction. It runs against any infrastructure target that supplies a driver. A user selects the target with `E2E_INFRA_DRIVER`, the same as the e2e suite. A user runs the test against Kind for local checks. A user runs the test against any OpenShift cluster for on-demand load tests.
 
-The performance test does not build images and does not create the cluster. It targets a cluster that already runs. It reuses the resources that `make kind-up` (or the OpenShift deploy) already seeded: one fleet, one managed cluster, one release, and one managed database. Each perf gateway create body reuses those ids, the same as the e2e suite (see `discover ... managed_databases` flow in `tests/e2e/e2e-openshell.sh`).
+The performance test does not build images and does not create the cluster. It targets a cluster that already runs. It reuses the resources that `make kind-up` (or the OpenShift deploy) already seeded: one managed cluster, one release, and (when `DATABASE_PROVIDER=cnpg`) one managed database. Each perf gateway create body reuses the cluster and release ids.
 
 ### Performance Architecture
 
@@ -806,7 +808,7 @@ tests/e2e/e2e-performance.sh (infra-agnostic performance harness)
     │
     ├── sources driver via E2E_INFRA_DRIVER (required: kind | openshift)
     │
-    ├── Phase 1  Preflight        -- discover API host, OIDC token, fleet/db ids, baseline;
+    ├── Phase 1  Preflight        -- discover API host, OIDC token, cluster/release ids, baseline;
     │                                provision the canary gateway and grant its OIDC role once
     ├── Phase 2  Batched scale-up -- add E2E_PERF_BATCH_SIZE gateways (bounded concurrency),
     │                                then run the e2e suite in short mode against the canary
@@ -842,7 +844,7 @@ The system SHALL provide a `make e2e-performance` target. The target SHALL run `
 
 The performance harness (`tests/e2e/e2e-performance.sh`) SHALL be infrastructure-agnostic. It SHALL call only the driver interface functions for infrastructure operations. It SHALL select the driver with `E2E_INFRA_DRIVER`, the same as the e2e suite. It SHALL exit with a non-zero status at startup if `E2E_INFRA_DRIVER` is unset or names a missing driver, and SHALL list the available drivers. It SHALL NOT contain any `kubectl`-only, `oc`-only, or `kind`-only command.
 
-The harness SHALL obtain the seeded fleet, cluster, release, and managed database ids the same way the e2e suite does: it SHALL query the API through `api_curl` (for example `GET /api/hypershell/v1/managed_databases` and a `search=name=...` gateway lookup) and reuse the shared seeding helpers in `tests/e2e/lib.sh`, never hardcoding ids or an infra-specific lookup. Every diagnostic or resource-inspection command SHALL invoke the Kubernetes CLI through `$(get_cli_binary)`, so it resolves to `kubectl` on Kind and `oc` on OpenShift with no change to the harness.
+The harness SHALL obtain the seeded cluster, release, and managed database ids the same way the e2e suite does: it SHALL query the API through `api_curl` and reuse the shared seeding helpers in `tests/e2e/lib.sh`, never hardcoding ids. When `E2E_SEED_CLUSTER_NAME` / `E2E_SEED_RELEASE_NAME` are set, discovery SHALL select the matching name; when they are unset it SHALL take the first list item (the single-seed Kind/CI layout). On `E2E_INFRA_DRIVER=kind` those names SHALL default to the `make kind-up` seeds (`local-kind`, `dev-release`). Every diagnostic or resource-inspection command SHALL invoke the Kubernetes CLI through `$(get_cli_binary)`, so it resolves to `kubectl` on Kind and `oc` on OpenShift with no change to the harness.
 
 The OpenShift driver is delivered by this spec as a partial implementation of `openshift-development.spec.md` (HYPERSHELL-44); the performance harness uses it for OpenShift runs (see [Scope](#scope)). The harness SHALL contain no infra-specific code: it works with either driver with no change. OpenShift runs are manual and on-demand; the performance test is not wired into CI for any target (see [Design Decisions](#design-decisions)).
 
@@ -868,7 +870,7 @@ The harness SHALL wait until each gateway reaches `Running` phase, or until `E2E
 
 #### Scenario: Fleet Provisioned
 
-- GIVEN a running target cluster with the seeded managed database
+- GIVEN a running target cluster with the seeded managed cluster, release, and managed database
 - WHEN the harness runs the scale-up phase with `E2E_PERF_GATEWAY_COUNT=N`
 - THEN it SHALL create N gateways named `<prefix>-1` through `<prefix>-N`
 - AND it SHALL wait until each gateway reports `Running` phase or the provision timeout elapses
@@ -956,7 +958,14 @@ Short mode SHALL stay fast enough to run after every scale-up batch. The table b
 | 10. Platform-admin RBAC | n/a; skipped in short (its assertion deletes a gateway) | full platform-admin matrix, including gateway deletion |
 | 11. Namespace GC | delete-driven GC with a bounded wait, on a throwaway namespace (not the reused gateway) | periodic-reaper orphan GC over the full timeout window; delete-driven GC of the run's own gateway |
 
-Short mode SHALL follow the same reuse-or-create pattern as the perf harness: when `E2E_GATEWAY_NAME` names an existing gateway it SHALL reuse that gateway rather than provision a new one, and it SHALL NOT delete it at the end (so a reused canary survives repeated short runs). This constraint governs the two areas that would otherwise tear a gateway down: the platform-admin RBAC area (area 10) SHALL NOT run its gateway-deletion step in short mode, and the namespace-GC area (area 11) SHALL exercise delete-driven GC against a throwaway namespace it creates, never against the supplied gateway. Any long-only step that deletes the run's own gateway SHALL NOT run in short mode.
+Short mode SHALL follow the same reuse-or-create pattern as the perf harness: when `E2E_GATEWAY_NAME` names an existing gateway it SHALL reuse that gateway rather than provision a new one, and it SHALL NOT delete it at the end (so a reused canary survives repeated short runs). This constraint governs the two areas that would otherwise tear a gateway down: the platform-admin RBAC area (area 10) SHALL NOT run its gateway-deletion step in short mode, and the namespace-GC area (area 11) SHALL exercise delete-driven GC against a throwaway gateway it creates, never against the supplied gateway. Creating that throwaway gateway SHALL reuse the seeded `cluster_id` and `release_id`. The suite SHALL take cluster and release ids from the environment when a parent (the performance harness) forwards them, from the reused gateway's JSON when that gateway already exists, or by discovering them from the API when either is missing. Any long-only step that deletes the run's own gateway SHALL NOT run in short mode.
+
+#### Scenario: Short Mode Throwaway Uses Seed Ids
+
+- GIVEN `E2E_MODE=short` and a reused canary gateway
+- WHEN the suite creates the namespace-GC throwaway gateway
+- THEN it SHALL POST that gateway with the seeded cluster and release ids
+- AND it SHALL NOT fail with unknown seed ids when the parent forwarded those ids or the reused gateway JSON contains them
 
 #### Scenario: Long Mode by Default
 
@@ -1010,18 +1019,21 @@ The harness SHALL compute and report metrics for the scale-up phase:
 
 - total gateways requested, provisioned, and failed
 - provisioning success rate (percent)
-- time-to-`Running` latency percentiles: p50, p90, p99, and max
-- provisioning throughput (gateways per minute)
-- total wall-clock time for the scale-up phase
-- the per-batch checkpoint series (cumulative count, batch latency percentiles, mode, mini-test duration, and mini-test result per checkpoint)
+- average time-to-`Running` latency plus p50, p90, p99, and max
+- provisioning throughput (gateways that reached `Running` per minute of wall-clock scale-up)
+- total wall-clock time for the scale-up phase, printed as `HH:MM:SS` (JSON still stores `wall_clock_seconds` as a number of seconds)
+- the per-batch checkpoint series (cumulative count, batch latency percentiles, mode, short e2e duration, and short e2e result per checkpoint)
 
-The human-readable stdout summary is the primary digest: a user reads it right after a run. The harness SHALL print an aligned summary table to stdout, including a checkpoint table with one row per batch so a user can see how latency and the mini-test result track with the growing fleet. The harness SHALL also write a machine-readable JSON summary for tooling (see [Performance Results Consumption](#requirement-performance-results-consumption)).
+The human-readable stdout summary is the primary digest: a user reads it right after a run. The harness SHALL print an aligned summary table to stdout. Label columns SHALL be wide enough that values share one vertical gutter; the checkpoint table SHALL size each column to at least its header so headers and values line up. Checkpoint `mode` and `result` SHALL be unquoted (`short`, `fail`), not JSON fragments (`short"`, `fail"`). Throughput SHALL be labeled `gateways / min` so the unit is explicit: provisioned gateways divided by scale-up wall-clock minutes. The checkpoint table SHALL include one row per batch so a user can see how latency and the short e2e result track with the growing fleet. The harness SHALL also write a machine-readable JSON summary for tooling (see [Performance Results Consumption](#requirement-performance-results-consumption)).
 
 #### Scenario: Metrics Printed
 
-- GIVEN the scale-up phase has finished
+- GIVEN the scale-up phase has finished with a 92-second wall clock and a failed short e2e checkpoint
 - WHEN the harness reaches its report phase
 - THEN it SHALL print the success rate, the latency percentiles, and the throughput to stdout as an aligned table
+- AND wall clock SHALL be printed as `00:01:32`
+- AND throughput SHALL be labeled `gateways / min`
+- AND the checkpoint row SHALL show `short` and `fail` without trailing quotes
 
 #### Scenario: JSON Summary Written
 
@@ -1070,7 +1082,7 @@ The performance test is run locally or against any OpenShift cluster, not in CI 
     "gateway_count": 20,
     "batch_size": 5,
     "concurrency": 4,
-    "provision_timeout": 600,
+    "provision_timeout": 180,
     "gateway_prefix": "perf-gw",
     "checkpoint": true,
     "stop_on_checkpoint_failure": true,
@@ -1085,8 +1097,8 @@ The performance test is run locally or against any OpenShift cluster, not in CI 
     "success_rate": 100.0,
     "wall_clock_seconds": 512,
     "throughput_per_min": 2.34,
-    "create_latency_seconds": { "p50": 0.4, "p90": 0.8, "p99": 1.1, "max": 1.3 },
-    "time_to_running_seconds": { "p50": 118, "p90": 205, "p99": 233, "max": 240 },
+    "create_latency_seconds": { "avg": 0.6, "p50": 0.4, "p90": 0.8, "p99": 1.1, "max": 1.3 },
+    "time_to_running_seconds": { "avg": 156, "p50": 118, "p90": 205, "p99": 233, "max": 240 },
     "stopped_early": false,
     "breaking_scale": null
   },
@@ -1094,7 +1106,7 @@ The performance test is run locally or against any OpenShift cluster, not in CI 
     {
       "gateways_running": 5,
       "at": "2026-08-21T15:33:10Z",
-      "batch_time_to_running_seconds": { "p50": 92, "p90": 140, "p99": 150, "max": 152 },
+      "batch_time_to_running_seconds": { "avg": 111, "p50": 92, "p90": 140, "p99": 150, "max": 152 },
       "mode": "short",
       "mini_test": "pass",
       "mini_test_seconds": 34
@@ -1102,7 +1114,7 @@ The performance test is run locally or against any OpenShift cluster, not in CI 
     {
       "gateways_running": 10,
       "at": "2026-08-21T15:35:41Z",
-      "batch_time_to_running_seconds": { "p50": 110, "p90": 180, "p99": 190, "max": 192 },
+      "batch_time_to_running_seconds": { "avg": 142, "p50": 110, "p90": 180, "p99": 190, "max": 192 },
       "mode": "short",
       "mini_test": "pass",
       "mini_test_seconds": 39
@@ -1120,7 +1132,36 @@ A field that does not apply SHALL be `null` (for example an unset SLO threshold,
 
 The results directory holds local run output, not source. The default `E2E_PERF_RESULTS_DIR` (`perf-results/`) SHALL be gitignored, so run artifacts (JSON history and the optional CSV) are never committed.
 
-**Local report target.** The system SHALL provide a `scripts/perf-report.sh` script and a `make e2e-performance-report` target. The report SHALL read the JSON history files under `E2E_PERF_RESULTS_DIR` and print an aligned table of the most recent `E2E_PERF_REPORT_LIMIT` runs (default 10), one row per run, with the timestamp, driver, gateway count, success rate, p99, throughput, and result. This lets a user spot a regression across local runs from the terminal. The report SHALL also be able to render the per-batch checkpoint series of a single run (cumulative count, batch p99, mini-test duration, and mini-test result per checkpoint), so a user can see at which scale latency climbs or the mini test starts failing within one run. A user SHALL select that single-run view by setting `E2E_PERF_REPORT_RUN` to a run's history-file path or its UTC timestamp (equivalently, passing it as the script's first argument); with no run selected the report prints the recent-runs table. The report SHALL depend only on tools already used by the suite (`bash`, `python3`); it SHALL NOT require `jq` or any external service.
+**Local report target.** The system SHALL provide a `scripts/perf-report.sh` script and a `make e2e-performance-report` target. The report SHALL read the JSON history files under `E2E_PERF_RESULTS_DIR` and print an aligned table of the most recent `E2E_PERF_REPORT_LIMIT` runs (default 10), one row per run, most recent first. This lets a user spot a regression across local runs from the terminal. A field that is missing or `null` in the JSON SHALL render as `-`. That includes a partial history file written before scale-up metrics and `result` were filled (interrupt, canary failure, or crash): the row SHALL still show the timestamp, driver, and requested count when those values exist, and `-` for the rest.
+
+Each tabulated run provisions `E2E_PERF_GATEWAY_COUNT` gateways (the `count` column; default 5) in batches of `E2E_PERF_BATCH_SIZE` (default 5). After each batch reaches `Running` (or times out), the harness SHALL run a short e2e test (`E2E_MODE=short` against the canary) as the checkpoint mini test, then continue to the next batch. Set `E2E_PERF_CHECKPOINT=0` to skip those per-batch short tests and provision the fleet in one pass. With the defaults (`count=5`, `batch size=5`), a run is one batch followed by one short e2e test, then the long functional suite. Raise `E2E_PERF_GATEWAY_COUNT` and keep `E2E_PERF_BATCH_SIZE` smaller to get several short e2e checkpoints as the fleet grows (see [Incremental Scale-Up Checkpoints](#requirement-incremental-scale-up-checkpoints)).
+
+The recent-runs table SHALL use these columns:
+
+| Column | Source | Meaning |
+|--------|--------|---------|
+| `timestamp` | `started_at` | UTC start time of the run |
+| `driver` | `driver` | Cluster driver used (`kind`, `openshift`, and so on) |
+| `count` | `config.gateway_count` | Requested fleet size, from `E2E_PERF_GATEWAY_COUNT` (default 5). This is the target, not how many gateways actually reached `Running`. The fleet is added in batches of `E2E_PERF_BATCH_SIZE` (default 5) |
+| `success%` | `scale_up.success_rate` | Share of counted gateways that reached `Running` before timeout. A failed provision lowers this number; it SHALL NOT by itself fail the run (see [Performance SLO Gating](#requirement-performance-slo-gating)) |
+| `avg` | `scale_up.time_to_running_seconds.avg` | Mean time-to-`Running` in seconds (API create until the gateway is `Running`) across the whole fleet |
+| `p99` | `scale_up.time_to_running_seconds.p99` | 99th-percentile time-to-`Running` in seconds, same clock as `avg` |
+| `tput/min` | `scale_up.throughput_per_min` | Gateways that reached `Running` per minute of wall-clock scale-up (`provisioned / (wall_clock_seconds / 60)`). The stdout summary labels the same value `gateways / min` |
+| `result` | `result` | Overall pass/fail of the run, not of provisioning. Includes the per-batch short e2e tests and the final long functional suite |
+
+`result` SHALL be independent of `success%`. With no SLO env vars set, the run SHALL fail when (a) the canary never reaches `Running`, (b) a per-batch short e2e test fails and `E2E_PERF_STOP_ON_CHECKPOINT_FAILURE=1` (the default), or (c) the functional suite (`E2E_MODE=long`) fails under load. Optional SLOs (`E2E_PERF_MIN_SUCCESS_RATE`, `E2E_PERF_MAX_PROVISION_P99`) MAY also fail the run. A row with `success%` of `100.0` and `result` of `fail` therefore means every counted gateway reached `Running`, but a short e2e checkpoint or the functional suite failed.
+
+The report SHALL also be able to render the per-batch checkpoint series of a single run, so a user can see at which scale latency climbs or the short e2e test starts failing within one run. A user SHALL select that single-run view by setting `E2E_PERF_REPORT_RUN` to a run's history-file path or its UTC timestamp (equivalently, passing it as the script's first argument); with no run selected the report prints the recent-runs table. Each checkpoint row is one batch of `E2E_PERF_BATCH_SIZE` followed by that short e2e test. The checkpoint table SHALL use these columns:
+
+| Column | Meaning |
+|--------|---------|
+| `count` | Cumulative gateways `Running` after that batch of `E2E_PERF_BATCH_SIZE` |
+| `batch avg` | Mean time-to-`Running` in seconds for the batch just added |
+| `batch p99` | 99th-percentile time-to-`Running` in seconds for that batch |
+| `mini s` | Duration of the short e2e test (`E2E_MODE=short`) that ran after that batch, in seconds |
+| `result` | Pass/fail of that short e2e test |
+
+The report SHALL depend only on `bash`; it SHALL NOT require `python3`, `jq`, or any external service.
 
 **Optional CSV export.** When `E2E_PERF_CSV=1`, the harness SHALL also write a CSV row per run to `<E2E_PERF_RESULTS_DIR>/history.csv` (append, with a header on first write), so a user can open the history in a spreadsheet. CSV export SHALL be off by default.
 
@@ -1150,18 +1191,31 @@ The results directory holds local run output, not source. The default `E2E_PERF_
 - GIVEN two or more run JSON files exist under `E2E_PERF_RESULTS_DIR`
 - WHEN a user runs `make e2e-performance-report`
 - THEN it SHALL print an aligned table with one row per run, most recent first
-- AND each row SHALL show the timestamp, driver, gateway count, success rate, p99, throughput, and result
+- AND each row SHALL show the timestamp, driver, count, success rate, average, p99, throughput, and result
+
+#### Scenario: Report Distinguishes Result From Success Rate
+
+- GIVEN a completed run whose JSON has `scale_up.success_rate` of `100.0` and `result` of `"fail"`
+- WHEN a user runs `make e2e-performance-report`
+- THEN that row SHALL show `100.0` under `success%` and `fail` under `result`
+
+#### Scenario: Partial Run Shows Dashes
+
+- GIVEN a history file that has `started_at`, `driver`, and `config.gateway_count` but `null` or missing scale-up metrics and `result`
+- WHEN a user runs `make e2e-performance-report`
+- THEN that row SHALL show the timestamp, driver, and count
+- AND it SHALL show `-` for success rate, average, p99, throughput, and result
 
 #### Scenario: Report Renders a Single Run's Checkpoints
 
 - GIVEN a run JSON file with a non-empty `checkpoints` array
 - WHEN a user runs `make e2e-performance-report` with `E2E_PERF_REPORT_RUN` set to that run
-- THEN it SHALL print the run's per-batch checkpoint series (cumulative count, batch p99, mini-test duration, and mini-test result per checkpoint)
+- THEN it SHALL print the run's per-batch checkpoint series (cumulative count, batch average, batch p99, mini-test duration, and mini-test result per checkpoint)
 - AND it SHALL NOT print the recent-runs table
 
 #### Scenario: Report Needs No External Tooling
 
-- GIVEN a machine with only `bash` and `python3` (no `jq`, no network)
+- GIVEN a machine with only `bash` (no `python3`, no `jq`, no network)
 - WHEN a user runs `make e2e-performance-report`
 - THEN it SHALL print the report without error
 
@@ -1216,13 +1270,13 @@ On failure, the harness SHALL collect diagnostics that explain resource pressure
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `E2E_PERF_GATEWAY_COUNT` | `5` | Number of gateways to provision in the scale-up phase. The canary and the functional gateway add two more stacks, so a run provisions `count + 2` gateways. The default suits a local Kind cluster; raise it on an OpenShift cluster with spare capacity |
-| `E2E_PERF_BATCH_SIZE` | `5` | Gateways added per batch before a checkpoint mini test (5--10 recommended) |
-| `E2E_PERF_CHECKPOINT` | `1` | Run the checkpoint mini test after each batch (`0` provisions in one pass, no checkpoints) |
+| `E2E_PERF_GATEWAY_COUNT` | `5` | Fleet size for scale-up (the report `count` column). The canary and the functional gateway add two more stacks, so a run provisions `count + 2` gateways. The default suits a local Kind cluster; raise it on an OpenShift cluster with spare capacity |
+| `E2E_PERF_BATCH_SIZE` | `5` | Gateways added per batch. After each batch the harness runs a short e2e test (`E2E_MODE=short`) against the canary (5--10 recommended) |
+| `E2E_PERF_CHECKPOINT` | `1` | Run that short e2e test after each batch (`0` provisions in one pass, no checkpoints) |
 | `E2E_PERF_STOP_ON_CHECKPOINT_FAILURE` | `1` | Stop scaling and fail on a failing checkpoint (`0` records it and continues) |
 | `E2E_PERF_CONCURRENCY` | `4` | Max concurrent create / provision / delete operations |
 | `E2E_PERF_GATEWAY_PREFIX` | `perf-gw` | Name prefix for the perf gateway fleet (canary is `<prefix>-canary`) |
-| `E2E_PERF_PROVISION_TIMEOUT` | `600` | Seconds to wait for each gateway to reach `Running` under load |
+| `E2E_PERF_PROVISION_TIMEOUT` | `180` | Seconds to wait for each gateway to reach `Running` under load |
 | `E2E_PERF_RUN_FUNCTIONAL` | `1` | Run the e2e functional suite after scale-up (`0` to skip) |
 | `E2E_PERF_FUNCTIONAL_GATEWAY_NAME` | `perf-e2e-gw` | Gateway name for the nested functional suite (avoids collision with the fleet) |
 | `E2E_PERF_RESULTS_DIR` | `perf-results` | Directory for the per-run JSON history files (and optional CSV) |
@@ -1263,4 +1317,4 @@ On failure, the harness SHALL collect diagnostics that explain resource pressure
 | SLO gating is optional and off by default | A plain run should just report metrics so a developer can explore capacity. Gating (`E2E_PERF_MIN_SUCCESS_RATE`, `E2E_PERF_MAX_PROVISION_P99`) is opt-in so a manual or on-demand run can fail on a regression without forcing thresholds on every local run |
 | Performance test is not wired into PR CI | A large-scale provisioning run is too heavy and too slow for the per-PR e2e gate (20-minute ceiling). The performance test is run on demand locally, against any OpenShift cluster, or on a schedule. Keeping it out of the PR path avoids flaky, resource-bound CI failures |
 | Terminal-native results: versioned JSON + history files + local report | Because the test is run manually and not in CI, results must digest from a terminal with no CI service. A documented, versioned JSON schema keeps `jq` filters stable across runs; per-run timestamped files build a local history instead of overwriting; a `make e2e-performance-report` target tabulates recent runs so a user can spot a regression. This gives the trend-comparison benefit of a CI benchmark chart without a CI dependency, and leaves the JSON as a clean hook to add `github-action-benchmark` later if the test is ever wired into CI |
-| Report depends only on bash + python3 | The suite already uses `bash` and `python3`; the report and JSON writing reuse them. Avoiding a hard `jq` dependency means the report runs on a plain machine with no extra install. CSV export is opt-in for users who prefer a spreadsheet |
+| Report depends only on bash | The performance harness writes JSON from bash state and the report reads that schema with bash string helpers. Avoiding `python3` and `jq` means the report runs on a plain machine with no extra install. CSV export is opt-in for users who prefer a spreadsheet |
