@@ -176,9 +176,11 @@ the reconciler SHALL return an error rather than reporting success, so the
 failure is surfaced and not silently swallowed. A definitive not-found for the
 hub gateway is a deterministic validation failure (status `Invalid`), not a
 transient error, and SHALL NOT be reported as an error. The reconciler SHALL NOT
-settle a network's status to `Invalid` on account of a transient failure; the
-network re-converges when the watch stream re-emits its state. Partial failures
-SHALL NOT be silently swallowed.
+settle a network's status to `Invalid` on account of a transient failure. The
+network watch is inline and log-only (there is no reconcile queue for networks,
+matching the sibling release reconciler) and does not replay state on reconnect,
+so a surfaced error re-converges only when the network is next mutated, not
+automatically. Partial failures SHALL NOT be silently swallowed.
 
 #### Scenario: Status write failure surfaces as an error
 

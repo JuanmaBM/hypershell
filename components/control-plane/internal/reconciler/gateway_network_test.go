@@ -192,7 +192,7 @@ func TestGatewayNetwork_NilResourceIsNoOp(t *testing.T) {
 	}
 }
 
-func TestGatewayNetwork_TransientHubLookupIsRetried(t *testing.T) {
+func TestGatewayNetwork_TransientHubLookupSurfacesAsError(t *testing.T) {
 	net := &fakeNetworkClient{}
 	gw := &fakeNetworkGatewayClient{getErr: status.Error(codes.Unavailable, "hub lookup down")}
 	r := newTestNetworkReconciler(gw, net)
@@ -207,7 +207,7 @@ func TestGatewayNetwork_TransientHubLookupIsRetried(t *testing.T) {
 	}
 }
 
-func TestGatewayNetwork_StatusWriteFailureIsRetried(t *testing.T) {
+func TestGatewayNetwork_StatusWriteFailureSurfacesAsError(t *testing.T) {
 	net := &fakeNetworkClient{updateErr: status.Error(codes.Unavailable, "api down")}
 	gw := &fakeNetworkGatewayClient{existing: map[string]bool{"hub1": true}}
 	r := newTestNetworkReconciler(gw, net)

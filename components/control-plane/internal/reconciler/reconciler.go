@@ -2174,9 +2174,9 @@ type GatewayNetworkReconciler struct {
 
 // NewGatewayNetworkReconciler builds the network reconciler. conn is the API
 // server gRPC connection used to look up the designated hub gateway and to write
-// network status back. conn may be nil (e.g. when the controller runs without a
-// Kubernetes client), in which case the hub existence check and status
-// write-back are skipped but the rest of validation still runs.
+// network status back. conn may be nil (e.g. in unit tests), in which case the
+// hub existence check and status write-back are skipped but the rest of
+// validation still runs.
 func NewGatewayNetworkReconciler(conn *grpc.ClientConn) *GatewayNetworkReconciler {
 	r := &GatewayNetworkReconciler{active: make(map[string]struct{})}
 	if conn != nil {
@@ -2219,8 +2219,11 @@ func (r *GatewayNetworkReconciler) Handle(ctx context.Context, event watcher.Eve
 	}
 
 	// Validate the declared configuration. A transient dependency failure (e.g. a
-	// transient hub lookup error) is returned so the reconcile is requeued and
-	// retried rather than settled to a misleading Invalid.
+	// transient hub lookup error) is returned so the failure is surfaced (logged
+	// by the watch loop) rather than silently swallowed or settled to a misleading
+	// Invalid. The network watch is inline log-only (no reconcile queue) and does
+	// not replay state on reconnect, so a surfaced error re-converges only when the
+	// network is next mutated, not automatically.
 	desiredStatus, retryErr := r.validate(ctx, net)
 	if retryErr != nil {
 		reconcileErr = fmt.Errorf("validate gateway network %s: %w", event.ResourceID, retryErr)
@@ -2241,8 +2244,9 @@ func (r *GatewayNetworkReconciler) Handle(ctx context.Context, event watcher.Eve
 // validate applies the network's structural and referential coherence rules and
 // returns the deterministic desired status (networkStatusValid, or
 // "networkStatusInvalid: reason"). It returns a non-nil error only for a
-// transient dependency failure that should be retried; a definitive not-found for
-// the hub gateway is a deterministic Invalid, not a retryable error.
+// transient dependency failure that should be surfaced rather than swallowed; a
+// definitive not-found for the hub gateway is a deterministic Invalid, not an
+// error.
 func (r *GatewayNetworkReconciler) validate(ctx context.Context, net *pb.GatewayNetwork) (string, error) {
 	invalid := func(reason string) string {
 		return fmt.Sprintf("%s: %s", networkStatusInvalid, reason)
@@ -2284,13 +2288,13 @@ func (r *GatewayNetworkReconciler) validate(ctx context.Context, net *pb.Gateway
 
 // updateStatus writes the network's reconciled status back to the API server. It
 // is a no-op when the network client is not configured.
-func (r *GatewayNetworkReconciler) updateStatus(ctx context.Context, id, status string) error {
+func (r *GatewayNetworkReconciler) updateStatus(ctx context.Context, id, desired string) error {
 	if r.networks == nil {
 		return nil
 	}
 	_, err := r.networks.UpdateGatewayNetwork(ctx, &pb.UpdateGatewayNetworkRequest{
 		Id:     id,
-		Status: &status,
+		Status: &desired,
 	})
 	return err
 }
