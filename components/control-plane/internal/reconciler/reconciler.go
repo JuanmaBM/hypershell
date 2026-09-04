@@ -2269,7 +2269,8 @@ func (r *GatewayNetworkReconciler) validate(ctx context.Context, net *pb.Gateway
 
 	if hubID != "" {
 		// A configured hub must reference an existing Gateway. Skip the lookup when
-		// no gateway client is configured (controller without a Kubernetes client).
+		// no gateway client is configured (started without an API-server gRPC
+		// connection, e.g. in unit tests).
 		if r.gateways == nil {
 			return networkStatusValid, nil
 		}
@@ -2278,7 +2279,8 @@ func (r *GatewayNetworkReconciler) validate(ctx context.Context, net *pb.Gateway
 			if status.Code(err) == codes.NotFound {
 				return invalid(fmt.Sprintf("hub gateway %q does not exist", hubID)), nil
 			}
-			// Transient failure: requeue rather than settle to a misleading Invalid.
+			// Transient failure: surface as an error rather than settle to a
+			// misleading Invalid.
 			return "", err
 		}
 	}

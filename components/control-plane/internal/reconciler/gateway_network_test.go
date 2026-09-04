@@ -199,7 +199,7 @@ func TestGatewayNetwork_TransientHubLookupSurfacesAsError(t *testing.T) {
 
 	err := r.Handle(context.Background(), networkEvent(watcher.EventCreated, "n1", "hub-spoke", "hub1", ""))
 	if err == nil {
-		t.Fatalf("expected transient hub lookup failure to return an error for requeue")
+		t.Fatalf("expected transient hub lookup failure to return an error")
 	}
 	// The network must not be settled to Invalid on account of a transient failure.
 	if len(net.updates) != 0 {
@@ -214,6 +214,6 @@ func TestGatewayNetwork_StatusWriteFailureSurfacesAsError(t *testing.T) {
 
 	err := r.Handle(context.Background(), networkEvent(watcher.EventCreated, "n1", "hub-spoke", "hub1", ""))
 	if err == nil {
-		t.Fatalf("expected status write failure to return an error for requeue")
+		t.Fatalf("expected status write failure to return an error")
 	}
 }
