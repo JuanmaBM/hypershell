@@ -25,6 +25,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/watch"
@@ -883,11 +884,54 @@ func waitForSecret(ctx context.Context, clientset *kubernetes.Clientset, namespa
 // whose readiness gates the Gateway `Running` phase.
 const GatewayDeploymentName = "openshell-gateway"
 
+// deploymentRolloutComplete judges a Deployment's rollout on its *new* revision,
+// not on any still-Ready old pod. It reports complete=true only when the
+// Deployment's spec change has been observed by its controller, its updated
+// replicas are available at the desired count, and no old replicas remain. It
+// also reports rollingOut=true when a new revision is still being rolled out
+// (spec not yet observed, updated replicas not yet at desired, or old replicas
+// still terminating), so callers can distinguish an in-progress rollout from a
+// steady-state degradation of the current revision. With maxUnavailable:0 and a
+// positive maxSurge, a still-Ready old pod would satisfy a plain
+// ReadyReplicas>=desired check while the new revision is still starting or
+// crash-looping; judging on the updated replicas closes that gap. When the
+// updated revision is fully rolled out but its pods are not all available, the
+// current revision is unhealthy (rollingOut=false). See
+// gateway-release-rollout.spec.md.
+func deploymentRolloutComplete(deploy *appsv1.Deployment) (complete bool, rollingOut bool, reason string) {
+	desired := int32(1)
+	if deploy.Spec.Replicas != nil {
+		desired = *deploy.Spec.Replicas
+	}
+	if desired < 1 {
+		return false, false, "deployment has zero desired replicas"
+	}
+	if deploy.Status.ObservedGeneration < deploy.Generation {
+		return false, true, "waiting for deployment spec update to be observed"
+	}
+	if deploy.Status.UpdatedReplicas < desired {
+		return false, true, fmt.Sprintf("%d/%d updated replicas rolled out", deploy.Status.UpdatedReplicas, desired)
+	}
+	if deploy.Status.Replicas > deploy.Status.UpdatedReplicas {
+		return false, true, fmt.Sprintf("waiting for %d old replica(s) to terminate", deploy.Status.Replicas-deploy.Status.UpdatedReplicas)
+	}
+	if deploy.Status.AvailableReplicas < desired {
+		return false, false, fmt.Sprintf("%d/%d updated replicas available", deploy.Status.AvailableReplicas, desired)
+	}
+	return true, false, ""
+}
+
 // DeploymentReadiness performs a single, non-blocking check of a Deployment's
 // readiness. It returns ready=true when ready replicas meet or exceed desired
 // replicas. When the Deployment is not ready, reason carries a short
 // human-readable descriptor (e.g. "1/2 replicas ready" or "deployment not
 // found") suitable for the Gateway `status` field.
+//
+// This is the general readiness primitive used for auxiliary workloads (the
+// per-gateway console and the embedded database). The gateway workload's own
+// rollout is judged on the *new* revision instead, via ObserveGatewayRollout /
+// deploymentRolloutComplete, so a still-Ready old pod cannot mask an unready new
+// revision during a release roll. See gateway-release-rollout.spec.md.
 func DeploymentReadiness(ctx context.Context, clientset kubernetes.Interface, namespace, name string) (ready bool, reason string, err error) {
 	deploy, err := clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -910,9 +954,31 @@ func DeploymentReadiness(ctx context.Context, clientset kubernetes.Interface, na
 	return false, fmt.Sprintf("%d/%d replicas ready", deploy.Status.ReadyReplicas, desired), nil
 }
 
+// ObserveGatewayRollout reports the gateway Deployment's revision-aware readiness
+// and whether a new revision is still rolling out. The health reconciler uses
+// rollingOut to leave an in-progress rollout to the provisioning path (which
+// owns the Provisioning -> Running/Degraded transition and preserves the
+// last-good workload) rather than flapping the phase or prematurely advancing
+// the observed release. It returns rollingOut=false with reason "deployment not
+// found" when the Deployment does not yet exist. See
+// gateway-release-rollout.spec.md.
+func ObserveGatewayRollout(ctx context.Context, clientset kubernetes.Interface, namespace, name string) (ready bool, rollingOut bool, reason string, err error) {
+	deploy, err := clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return false, false, "deployment not found", nil
+		}
+		return false, false, "", fmt.Errorf("get deployment %s/%s: %w", namespace, name, err)
+	}
+	complete, rollingOut, reason := deploymentRolloutComplete(deploy)
+	return complete, rollingOut, reason, nil
+}
+
 // WaitForGatewayReady blocks until the openshell-gateway Deployment reaches
-// readiness or the timeout elapses. It returns ready=true on readiness, or
-// ready=false with the last observed reason when the provisioning readiness
+// readiness or the timeout elapses. Readiness is judged on the new revision
+// (see ObserveGatewayRollout), so a still-Ready old pod cannot let a defective
+// release be reported ready during a roll. It returns ready=true on readiness,
+// or ready=false with the last observed reason when the provisioning readiness
 // window expires without the workload becoming ready.
 func WaitForGatewayReady(ctx context.Context, clientset *kubernetes.Clientset, namespace string, timeout time.Duration) (bool, string) {
 	deadline := time.After(timeout)
@@ -927,7 +993,7 @@ func WaitForGatewayReady(ctx context.Context, clientset *kubernetes.Clientset, n
 		case <-deadline:
 			return false, lastReason
 		case <-ticker.C:
-			ready, reason, err := DeploymentReadiness(ctx, clientset, namespace, GatewayDeploymentName)
+			ready, _, reason, err := ObserveGatewayRollout(ctx, clientset, namespace, GatewayDeploymentName)
 			if err != nil {
 				lastReason = err.Error()
 				continue

@@ -1,0 +1,176 @@
+package gateway
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8stesting "k8s.io/client-go/testing"
+
+	k8sfake "k8s.io/client-go/kubernetes/fake"
+)
+
+// gatewayDeployment builds a gateway Deployment fixture with the given spec and
+// observed status, so the revision-aware readiness helpers can be exercised
+// against the same fields the Deployment controller reports during a rollout.
+func gatewayDeployment(replicas, generation, observedGeneration, updated, total, available int32) *appsv1.Deployment {
+	r := replicas
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       GatewayDeploymentName,
+			Namespace:  "gw-ns",
+			Generation: int64(generation),
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: &r},
+		Status: appsv1.DeploymentStatus{
+			ObservedGeneration: int64(observedGeneration),
+			UpdatedReplicas:    updated,
+			Replicas:           total,
+			AvailableReplicas:  available,
+		},
+	}
+}
+
+// TestDeploymentRolloutComplete pins the revision-aware readiness decision: it is
+// judged on the *new* revision (observed generation caught up, updated replicas
+// available at the desired count, no old replicas left), and it distinguishes an
+// in-progress rollout from a steady-state degradation of the current revision.
+// See gateway-release-rollout.spec.md.
+func TestDeploymentRolloutComplete(t *testing.T) {
+	tests := []struct {
+		name           string
+		deploy         *appsv1.Deployment
+		wantComplete   bool
+		wantRollingOut bool
+	}{
+		{
+			// Success: the new revision is fully rolled out and available.
+			name:         "new revision fully available",
+			deploy:       gatewayDeployment(1, 2, 2, 1, 1, 1),
+			wantComplete: true,
+		},
+		{
+			// Rollout in progress: the Deployment controller has not yet observed
+			// the new spec. This is the window the health loop must defer to the
+			// provisioning path rather than flapping the phase.
+			name:           "spec update not yet observed",
+			deploy:         gatewayDeployment(1, 3, 2, 1, 1, 1),
+			wantRollingOut: true,
+		},
+		{
+			// Rollout in progress: the new revision's pod is not yet updated. A
+			// still-Ready old pod (available=1) must NOT satisfy the gate.
+			name:           "updated replica not yet rolled out",
+			deploy:         gatewayDeployment(1, 2, 2, 0, 1, 1),
+			wantRollingOut: true,
+		},
+		{
+			// Rollout in progress: the new revision is up but an old replica is
+			// still terminating (surge). Not complete until it is gone.
+			name:           "old replica still terminating",
+			deploy:         gatewayDeployment(1, 2, 2, 1, 2, 2),
+			wantRollingOut: true,
+		},
+		{
+			// Failed readiness / steady-state degradation: the updated revision is
+			// the only revision (no old replicas), so this is not a roll -- the
+			// current release's pod is simply unavailable (e.g. crash-looping).
+			name:   "updated revision unavailable is not a roll",
+			deploy: gatewayDeployment(1, 2, 2, 1, 1, 0),
+		},
+		{
+			name:   "zero desired replicas",
+			deploy: gatewayDeployment(0, 1, 1, 0, 0, 0),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			complete, rollingOut, reason := deploymentRolloutComplete(tc.deploy)
+			if complete != tc.wantComplete {
+				t.Errorf("complete = %v, want %v (reason %q)", complete, tc.wantComplete, reason)
+			}
+			if rollingOut != tc.wantRollingOut {
+				t.Errorf("rollingOut = %v, want %v (reason %q)", rollingOut, tc.wantRollingOut, reason)
+			}
+			if !complete && reason == "" {
+				t.Error("expected a non-empty reason when not complete")
+			}
+			if complete && reason != "" {
+				t.Errorf("expected empty reason when complete, got %q", reason)
+			}
+		})
+	}
+}
+
+// TestObserveGatewayRollout covers the revision-aware observation used by both
+// the provisioning wait loop and the health loop, including the rollingOut signal
+// the health loop relies on to defer an in-progress roll to the provisioning path,
+// and the not-found and API-error paths.
+func TestObserveGatewayRollout(t *testing.T) {
+	t.Run("complete", func(t *testing.T) {
+		cs := k8sfake.NewSimpleClientset(gatewayDeployment(1, 2, 2, 1, 1, 1))
+		ready, rollingOut, _, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !ready || rollingOut {
+			t.Errorf("ready=%v rollingOut=%v, want true/false", ready, rollingOut)
+		}
+	})
+
+	t.Run("rolling out", func(t *testing.T) {
+		cs := k8sfake.NewSimpleClientset(gatewayDeployment(1, 3, 2, 0, 1, 1))
+		ready, rollingOut, _, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if ready || !rollingOut {
+			t.Errorf("ready=%v rollingOut=%v, want false/true", ready, rollingOut)
+		}
+	})
+
+	t.Run("degraded current revision is not rolling out", func(t *testing.T) {
+		cs := k8sfake.NewSimpleClientset(gatewayDeployment(1, 2, 2, 1, 1, 0))
+		ready, rollingOut, reason, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if ready || rollingOut {
+			t.Errorf("ready=%v rollingOut=%v, want false/false", ready, rollingOut)
+		}
+		if reason == "" {
+			t.Error("expected a non-empty reason")
+		}
+	})
+
+	t.Run("deployment not found is not rolling out", func(t *testing.T) {
+		cs := k8sfake.NewSimpleClientset()
+		ready, rollingOut, reason, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if ready || rollingOut {
+			t.Errorf("ready=%v rollingOut=%v, want false/false", ready, rollingOut)
+		}
+		if reason != "deployment not found" {
+			t.Errorf("reason = %q, want %q", reason, "deployment not found")
+		}
+	})
+
+	t.Run("api error is surfaced", func(t *testing.T) {
+		cs := k8sfake.NewSimpleClientset()
+		cs.PrependReactor("get", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("boom")
+		})
+		ready, rollingOut, _, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
+		if err == nil {
+			t.Fatal("expected an error to be surfaced, got nil")
+		}
+		if ready || rollingOut {
+			t.Errorf("ready=%v rollingOut=%v, want false/false on error", ready, rollingOut)
+		}
+	})
+}
