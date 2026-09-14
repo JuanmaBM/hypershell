@@ -199,16 +199,6 @@ func ReconcileGateway(
 //   - the cluster-scoped ClusterRoleBinding created for the gateway,
 //   - the gateway's external Keycloak client, and
 //   - any credential RBAC the gateway created in a separate credential namespace.
-// recordOrphan invokes opts.RecordOrphan if the caller wired one, so a
-// best-effort deletion failure that leaves a gateway-owned resource behind is
-// surfaced durably instead of only logged. It is a no-op when no recorder is
-// configured, keeping the best-effort branches backward compatible.
-func recordOrphan(ctx context.Context, opts ReconcileOpts, resourceKind, resourceName, reason string) {
-	if opts.RecordOrphan != nil {
-		opts.RecordOrphan(ctx, resourceKind, resourceName, reason)
-	}
-}
-
 func DeleteGatewayResources(
 	ctx context.Context,
 	dynamicClient dynamic.Interface,
@@ -295,6 +285,16 @@ func DeleteGatewayResources(
 
 	log.Printf("INFO gateway out-of-namespace resources cleaned up for namespace %s", namespace)
 	return nil
+}
+
+// recordOrphan invokes opts.RecordOrphan if the caller wired one, so a
+// best-effort deletion failure that leaves a gateway-owned resource behind is
+// surfaced durably instead of only logged. It is a no-op when no recorder is
+// configured, keeping the best-effort branches backward compatible.
+func recordOrphan(ctx context.Context, opts ReconcileOpts, resourceKind, resourceName, reason string) {
+	if opts.RecordOrphan != nil {
+		opts.RecordOrphan(ctx, resourceKind, resourceName, reason)
+	}
 }
 
 // DeleteLabeledNamespaceResources reclaims this gateway's own in-namespace
