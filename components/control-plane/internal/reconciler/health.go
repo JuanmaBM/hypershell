@@ -153,7 +153,15 @@ func NewGatewayHealthReconciler(clientset *kubernetes.Clientset, dynamicClient d
 // fakes, which take the non-routed path. Returning nil (rather than panicking on a
 // failed assertion) keeps a misconfiguration from crashing the health loop.
 func (h *GatewayHealthReconciler) concreteClientset() *kubernetes.Clientset {
-	cs, _ := h.clientset.(*kubernetes.Clientset)
+	cs, ok := h.clientset.(*kubernetes.Clientset)
+	if !ok {
+		// Never happens in production (the constructor always wires a concrete
+		// client). Log rather than return a silent nil so that if a future test or
+		// refactor drives a routed teardown/console path with a non-concrete fake,
+		// the misconfiguration is diagnosable here instead of surfacing as an opaque
+		// nil dereference deep inside the gateway helpers.
+		log.Printf("WARN gateway health: clientset is %T, not *kubernetes.Clientset; routed teardown/console helpers require the concrete client", h.clientset)
+	}
 	return cs
 }
 
