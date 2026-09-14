@@ -9,33 +9,21 @@ import (
 	"google.golang.org/grpc"
 )
 
-// gatewayWith builds a minimal Gateway proto carrying an id, desired release, and
-// currently observed release, so advanceObservedRelease's convergence and
-// idempotency can be exercised.
-func gatewayWith(id, releaseID, observedReleaseID string) *pb.Gateway {
-	gw := &pb.Gateway{
-		Metadata:  &pb.ObjectReference{Id: id},
-		ReleaseId: releaseID,
-	}
-	if observedReleaseID != "" {
-		gw.ObservedReleaseId = &observedReleaseID
-	}
-	return gw
-}
-
 // TestAdvanceObservedRelease pins the write-back contract: the observed release is
-// advanced to the desired release only once the new revision has passed its health
-// gates, the write is skipped when it would be redundant (unchanged release or a
-// direct-image gateway), and a write-back failure is surfaced for retry rather
-// than swallowed. See gateway-release-rollout.spec.md.
+// advanced only to the release actually applied to the workload (appliedRelease),
+// the write is skipped when it would be redundant (unchanged release or a
+// direct-image gateway with no applied release), and a write-back failure is
+// surfaced for retry rather than swallowed. Advancing to the *applied* release --
+// not the desired one -- is what prevents falsely reporting a release the workload
+// has not yet rolled out. See gateway-release-rollout.spec.md.
 func TestAdvanceObservedRelease(t *testing.T) {
-	t.Run("advances to desired release", func(t *testing.T) {
+	t.Run("advances to the applied release", func(t *testing.T) {
 		var got *pb.UpdateGatewayRequest
 		client := &fakeGatewayClient{updateFn: func(_ context.Context, in *pb.UpdateGatewayRequest, _ ...grpc.CallOption) (*pb.UpdateGatewayResponse, error) {
 			got = in
 			return &pb.UpdateGatewayResponse{}, nil
 		}}
-		err := advanceObservedRelease(context.Background(), client, gatewayWith("gw-1", "rel-new", "rel-old"))
+		err := advanceObservedRelease(context.Background(), client, "gw-1", "rel-old", "rel-new")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -54,13 +42,13 @@ func TestAdvanceObservedRelease(t *testing.T) {
 		}
 	})
 
-	t.Run("no write when observed already matches desired", func(t *testing.T) {
+	t.Run("no write when observed already matches the applied release", func(t *testing.T) {
 		called := false
 		client := &fakeGatewayClient{updateFn: func(_ context.Context, _ *pb.UpdateGatewayRequest, _ ...grpc.CallOption) (*pb.UpdateGatewayResponse, error) {
 			called = true
 			return &pb.UpdateGatewayResponse{}, nil
 		}}
-		if err := advanceObservedRelease(context.Background(), client, gatewayWith("gw-1", "rel-new", "rel-new")); err != nil {
+		if err := advanceObservedRelease(context.Background(), client, "gw-1", "rel-new", "rel-new"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if called {
@@ -68,17 +56,35 @@ func TestAdvanceObservedRelease(t *testing.T) {
 		}
 	})
 
-	t.Run("no write for a direct-image gateway without a release", func(t *testing.T) {
+	t.Run("no write for a direct-image gateway with no applied release", func(t *testing.T) {
 		called := false
 		client := &fakeGatewayClient{updateFn: func(_ context.Context, _ *pb.UpdateGatewayRequest, _ ...grpc.CallOption) (*pb.UpdateGatewayResponse, error) {
 			called = true
 			return &pb.UpdateGatewayResponse{}, nil
 		}}
-		if err := advanceObservedRelease(context.Background(), client, gatewayWith("gw-1", "", "")); err != nil {
+		if err := advanceObservedRelease(context.Background(), client, "gw-1", "", ""); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if called {
-			t.Error("expected no UpdateGateway call when the gateway has no release_id")
+			t.Error("expected no UpdateGateway call when the workload has no applied release")
+		}
+	})
+
+	t.Run("no write when the desired release is not yet applied", func(t *testing.T) {
+		// The health loop must NOT advance observed to a desired release the workload
+		// has not rolled out: it only ever passes the Deployment's applied release. An
+		// empty applied release (the Deployment carries no annotation yet) is a no-op
+		// even though a newer release may be desired.
+		called := false
+		client := &fakeGatewayClient{updateFn: func(_ context.Context, _ *pb.UpdateGatewayRequest, _ ...grpc.CallOption) (*pb.UpdateGatewayResponse, error) {
+			called = true
+			return &pb.UpdateGatewayResponse{}, nil
+		}}
+		if err := advanceObservedRelease(context.Background(), client, "gw-1", "rel-old", ""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if called {
+			t.Error("expected no UpdateGateway call when the desired release is not yet applied to the workload")
 		}
 	})
 
@@ -86,7 +92,7 @@ func TestAdvanceObservedRelease(t *testing.T) {
 		client := &fakeGatewayClient{updateFn: func(_ context.Context, _ *pb.UpdateGatewayRequest, _ ...grpc.CallOption) (*pb.UpdateGatewayResponse, error) {
 			return nil, errors.New("grpc down")
 		}}
-		err := advanceObservedRelease(context.Background(), client, gatewayWith("gw-1", "rel-new", "rel-old"))
+		err := advanceObservedRelease(context.Background(), client, "gw-1", "rel-old", "rel-new")
 		if err == nil {
 			t.Fatal("expected the write-back failure to be surfaced, got nil")
 		}

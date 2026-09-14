@@ -49,7 +49,10 @@ const routeVerifyInterval = 5 * time.Minute
 // moved to Degraded, and a Degraded gateway whose workload and exposure recover
 // is moved back to Running. See openshell-gateway-health.spec.md.
 type GatewayHealthReconciler struct {
-	clientset     *kubernetes.Clientset
+	// clientset is the interface type (not the concrete *kubernetes.Clientset) so
+	// health passes can be driven by a fake in tests. Production wires the real
+	// clientset via NewGatewayHealthReconciler.
+	clientset     kubernetes.Interface
 	dynamicClient dynamic.Interface
 	grpcConn      *grpc.ClientConn
 	// clusterID scopes the health sweep to this managed cluster's gateways. When
@@ -139,6 +142,19 @@ func NewGatewayHealthReconciler(clientset *kubernetes.Clientset, dynamicClient d
 		routeTornDown:         make(map[string]bool),
 		routeVerifiedAt:       make(map[string]time.Time),
 	}
+}
+
+// concreteClientset returns the production *kubernetes.Clientset backing this
+// reconciler. The routed teardown and console helpers in the gateway package are
+// typed against the concrete client, whereas h.clientset is the interface type so
+// health passes can be driven by a fake in tests. NewGatewayHealthReconciler
+// always wires a concrete client, so this returns non-nil in production; the
+// routed paths that consume it are never reached under the interface-only test
+// fakes, which take the non-routed path. Returning nil (rather than panicking on a
+// failed assertion) keeps a misconfiguration from crashing the health loop.
+func (h *GatewayHealthReconciler) concreteClientset() *kubernetes.Clientset {
+	cs, _ := h.clientset.(*kubernetes.Clientset)
+	return cs
 }
 
 // routeReadyTimeout resolves the route-readiness grace window from
@@ -296,7 +312,7 @@ func (h *GatewayHealthReconciler) reconcileGatewayHealth(ctx context.Context, cl
 		log.Printf("WARN gateway health: %s: %v", gatewayID, err)
 		return "", false
 	}
-	ready, rollingOut, reason, err := gateway.ObserveGatewayRollout(ctx, h.clientset, namespace, gateway.GatewayDeploymentName)
+	ready, rollingOut, appliedRelease, reason, err := gateway.ObserveGatewayRollout(ctx, h.clientset, namespace, gateway.GatewayDeploymentName)
 	if err != nil {
 		log.Printf("WARN gateway health: %s: %v", gatewayID, err)
 		return "", false
@@ -337,13 +353,18 @@ func (h *GatewayHealthReconciler) reconcileGatewayHealth(ctx context.Context, cl
 	}
 
 	// When the current revision is healthy, converge the observed release to the
-	// desired one. This is idempotent (a no-op once they match) and revision-aware
-	// readiness above guarantees the healthy pods run the desired image, so it is
-	// safe to advance even on a steady-state tick -- e.g. to recover a lagging
+	// one actually applied to the workload -- appliedRelease, read back from the
+	// Deployment's applied-release annotation, NOT the desired gw.GetReleaseId().
+	// During the window after a release_id change is committed but before the
+	// provisioning path re-renders the Deployment, the workload is still steady on
+	// the prior release; advancing to the desired release there would falsely report
+	// a release the workload has not yet rolled out (the exact failure the spec
+	// forbids). Advancing to appliedRelease is idempotent (a no-op once observed
+	// matches) and safe on a steady-state tick -- e.g. to recover a lagging
 	// observed_release_id after a control-plane restart. Failures are logged and
 	// retried on the next tick, never swallowed. See gateway-release-rollout.spec.md.
 	if desiredPhase == string(gatewayhealth.PhaseRunning) && desiredStatus == gatewayhealth.StatusHealthy {
-		if err := advanceObservedRelease(ctx, client, gw); err != nil {
+		if err := advanceObservedRelease(ctx, client, gatewayID, gw.GetObservedReleaseId(), appliedRelease); err != nil {
 			log.Printf("WARN gateway health: %s: %v", gatewayID, err)
 		}
 	}
@@ -424,7 +445,7 @@ func (h *GatewayHealthReconciler) selfHealConsole(ctx context.Context, gatewayID
 		GatewayID:           gatewayID,
 		GatewayName:         gw.GetName(),
 	}
-	if err := gateway.ReconcileConsole(ctx, h.dynamicClient, h.clientset, gateway.NamespaceConfig{Name: namespace}, opts); err != nil {
+	if err := gateway.ReconcileConsole(ctx, h.dynamicClient, h.concreteClientset(), gateway.NamespaceConfig{Name: namespace}, opts); err != nil {
 		log.Printf("WARN console self-heal in %s: %v", namespace, err)
 		return
 	}
@@ -512,13 +533,13 @@ func (h *GatewayHealthReconciler) teardownRoute(ctx context.Context, client pb.G
 	var teardownErr error
 	switch h.ingressMode {
 	case gateway.IngressModeGatewayAPI:
-		teardownErr = gateway.DeleteGatewayAPIResources(ctx, h.dynamicClient, h.clientset, namespace, opts)
+		teardownErr = gateway.DeleteGatewayAPIResources(ctx, h.dynamicClient, h.concreteClientset(), namespace, opts)
 	case gateway.IngressModeRoute:
-		teardownErr = gateway.DeleteRouteResources(ctx, h.dynamicClient, h.clientset, namespace, opts)
+		teardownErr = gateway.DeleteRouteResources(ctx, h.dynamicClient, h.concreteClientset(), namespace, opts)
 	case gateway.IngressModeNone:
 		// No gateway exposure is active. Remove remaining console resources and
 		// clear a stored route address from an earlier configuration.
-		teardownErr = gateway.DeleteConsole(ctx, h.dynamicClient, h.clientset, namespace, opts)
+		teardownErr = gateway.DeleteConsole(ctx, h.dynamicClient, h.concreteClientset(), namespace, opts)
 		if opts.UpdateRouteAddress != nil {
 			if err := opts.UpdateRouteAddress(ctx, ""); err != nil {
 				teardownErr = errors.Join(teardownErr, fmt.Errorf("clear route address in %s: %w", namespace, err))

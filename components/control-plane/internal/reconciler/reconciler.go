@@ -1693,6 +1693,10 @@ func (r *GatewayReconciler) Handle(ctx context.Context, event watcher.Event[*pb.
 	if image != "" {
 		gwConfig.Image = image
 	}
+	// Record the release the image was resolved from so the applied release is
+	// stamped onto the Deployment and the health loop advances observed_release_id
+	// only to what was actually rolled out. Empty for a direct-image gateway.
+	gwConfig.ReleaseID = gw.ReleaseId
 
 	if gw.SupervisorImage != nil && *gw.SupervisorImage != "" {
 		gwConfig.SupervisorImage = *gw.SupervisorImage
@@ -1805,10 +1809,12 @@ func (r *GatewayReconciler) Handle(ctx context.Context, event watcher.Event[*pb.
 				observeGatewayProvisionDuration(ctx, runningGateway)
 			}
 			// The new revision has passed its workload and route health gates: now
-			// report the release actually rolled out. A write-back failure is
-			// surfaced so the reconcile is retried rather than leaving the gateway
-			// falsely reporting the new release. See gateway-release-rollout.spec.md.
-			if err := advanceObservedRelease(ctx, client, gw); err != nil {
+			// report the release actually rolled out. This path just rendered the
+			// Deployment from gw.ReleaseId (gwConfig.ReleaseID above), so the applied
+			// release is gw.GetReleaseId(). A write-back failure is surfaced so the
+			// reconcile is retried rather than leaving the gateway falsely reporting
+			// the new release. See gateway-release-rollout.spec.md.
+			if err := advanceObservedRelease(ctx, client, gw.GetMetadata().GetId(), gw.GetObservedReleaseId(), gw.GetReleaseId()); err != nil {
 				log.Printf("WARN gateway %s: %v", gw.Name, err)
 				return err
 			}
@@ -1826,7 +1832,9 @@ func (r *GatewayReconciler) Handle(ctx context.Context, event watcher.Event[*pb.
 			observeGatewayProvisionDuration(ctx, runningGateway)
 		}
 		// The new revision has passed its health gate: report the release rolled out.
-		if err := advanceObservedRelease(ctx, client, gw); err != nil {
+		// This path just rendered the Deployment from gw.ReleaseId, so the applied
+		// release is gw.GetReleaseId().
+		if err := advanceObservedRelease(ctx, client, gw.GetMetadata().GetId(), gw.GetObservedReleaseId(), gw.GetReleaseId()); err != nil {
 			log.Printf("WARN gateway %s: %v", gw.Name, err)
 			return err
 		}
@@ -2235,27 +2243,28 @@ func (r *GatewayReconciler) updateGatewayStatus(ctx context.Context, gatewayID, 
 	return nil
 }
 
-// advanceObservedRelease reports the release the control plane has rolled out
-// and observed healthy by setting the Gateway's observed_release_id to its
-// desired release_id, once the new revision has passed its health gates. It is a
-// no-op when the gateway has no release_id (a direct-image gateway, whose
-// observed release stays empty) or when observed_release_id already matches, so
-// it issues no redundant write for an unchanged release. A write-back failure is
-// returned so the caller can retry rather than leave the gateway falsely
-// reporting the new release as rolled out. See gateway-release-rollout.spec.md.
-func advanceObservedRelease(ctx context.Context, client pb.GatewayServiceClient, gw *pb.Gateway) error {
-	desired := gw.GetReleaseId()
-	gatewayID := gw.GetMetadata().GetId()
-	if desired == "" || gatewayID == "" || gw.GetObservedReleaseId() == desired {
+// advanceObservedRelease reports the release the control plane has rolled out and
+// observed healthy by setting the Gateway's observed_release_id to appliedRelease
+// -- the release actually rendered onto the ready workload -- once the new
+// revision has passed its health gates. Callers MUST pass the applied release, not
+// the desired release_id: advancing to a desired release the workload has not yet
+// rolled out would falsely report it ready (the exact failure the spec forbids).
+// It is a no-op when appliedRelease is empty (a direct-image gateway, whose
+// observed release stays empty) or when observed_release_id already matches, so it
+// issues no redundant write for an unchanged release. A write-back failure is
+// returned so the caller can retry rather than leave the gateway falsely reporting
+// the new release as rolled out. See gateway-release-rollout.spec.md.
+func advanceObservedRelease(ctx context.Context, client pb.GatewayServiceClient, gatewayID, observedRelease, appliedRelease string) error {
+	if appliedRelease == "" || gatewayID == "" || observedRelease == appliedRelease {
 		return nil
 	}
 	if _, err := client.UpdateGateway(ctx, &pb.UpdateGatewayRequest{
 		Id:                gatewayID,
-		ObservedReleaseId: &desired,
+		ObservedReleaseId: &appliedRelease,
 	}); err != nil {
-		return fmt.Errorf("advance observed_release_id for gateway %s to %s: %w", gatewayID, desired, err)
+		return fmt.Errorf("advance observed_release_id for gateway %s to %s: %w", gatewayID, appliedRelease, err)
 	}
-	log.Printf("INFO gateway %s observed release advanced to %s", gatewayID, desired)
+	log.Printf("INFO gateway %s observed release advanced to %s", gatewayID, appliedRelease)
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -105,25 +106,54 @@ func TestDeploymentRolloutComplete(t *testing.T) {
 	}
 }
 
+// withAppliedRelease stamps the applied-release annotation on a Deployment
+// fixture, mirroring what deployGateway records at apply time, so the
+// appliedRelease return of ObserveGatewayRollout can be exercised.
+func withAppliedRelease(deploy *appsv1.Deployment, releaseID string) *appsv1.Deployment {
+	if deploy.Annotations == nil {
+		deploy.Annotations = map[string]string{}
+	}
+	deploy.Annotations[AppliedReleaseAnnotation] = releaseID
+	return deploy
+}
+
 // TestObserveGatewayRollout covers the revision-aware observation used by both
 // the provisioning wait loop and the health loop, including the rollingOut signal
 // the health loop relies on to defer an in-progress roll to the provisioning path,
-// and the not-found and API-error paths.
+// the appliedRelease the health loop advances observed_release_id to, and the
+// not-found and API-error paths.
 func TestObserveGatewayRollout(t *testing.T) {
-	t.Run("complete", func(t *testing.T) {
-		cs := k8sfake.NewSimpleClientset(gatewayDeployment(1, 2, 2, 1, 1, 1))
-		ready, rollingOut, _, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
+	t.Run("complete reports the applied release", func(t *testing.T) {
+		cs := k8sfake.NewSimpleClientset(withAppliedRelease(gatewayDeployment(1, 2, 2, 1, 1, 1), "rel-1"))
+		ready, rollingOut, appliedRelease, _, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if !ready || rollingOut {
 			t.Errorf("ready=%v rollingOut=%v, want true/false", ready, rollingOut)
 		}
+		if appliedRelease != "rel-1" {
+			t.Errorf("appliedRelease = %q, want %q", appliedRelease, "rel-1")
+		}
+	})
+
+	t.Run("complete direct-image gateway reports no applied release", func(t *testing.T) {
+		cs := k8sfake.NewSimpleClientset(gatewayDeployment(1, 2, 2, 1, 1, 1))
+		ready, _, appliedRelease, _, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !ready {
+			t.Errorf("ready=%v, want true", ready)
+		}
+		if appliedRelease != "" {
+			t.Errorf("appliedRelease = %q, want empty for a Deployment without the annotation", appliedRelease)
+		}
 	})
 
 	t.Run("rolling out", func(t *testing.T) {
 		cs := k8sfake.NewSimpleClientset(gatewayDeployment(1, 3, 2, 0, 1, 1))
-		ready, rollingOut, _, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
+		ready, rollingOut, _, _, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -134,7 +164,7 @@ func TestObserveGatewayRollout(t *testing.T) {
 
 	t.Run("degraded current revision is not rolling out", func(t *testing.T) {
 		cs := k8sfake.NewSimpleClientset(gatewayDeployment(1, 2, 2, 1, 1, 0))
-		ready, rollingOut, reason, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
+		ready, rollingOut, _, reason, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -148,7 +178,7 @@ func TestObserveGatewayRollout(t *testing.T) {
 
 	t.Run("deployment not found is not rolling out", func(t *testing.T) {
 		cs := k8sfake.NewSimpleClientset()
-		ready, rollingOut, reason, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
+		ready, rollingOut, _, reason, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -165,12 +195,55 @@ func TestObserveGatewayRollout(t *testing.T) {
 		cs.PrependReactor("get", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, errors.New("boom")
 		})
-		ready, rollingOut, _, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
+		ready, rollingOut, _, _, err := ObserveGatewayRollout(context.Background(), cs, "gw-ns", GatewayDeploymentName)
 		if err == nil {
 			t.Fatal("expected an error to be surfaced, got nil")
 		}
 		if ready || rollingOut {
 			t.Errorf("ready=%v rollingOut=%v, want false/false on error", ready, rollingOut)
+		}
+	})
+}
+
+// TestWaitForGatewayReady covers the provisioning wait loop's readiness gate: it
+// reports ready once the new revision is fully rolled out, and -- critically -- it
+// does NOT report ready when the readiness window expires with the workload still
+// unready, so a timeout drives the gateway to Degraded rather than falsely
+// reporting the new release. See gateway-release-rollout.spec.md.
+func TestWaitForGatewayReady(t *testing.T) {
+	// Shorten the poll cadence so the loop observes the fake within a short window.
+	orig := gatewayReadyPollInterval
+	gatewayReadyPollInterval = time.Millisecond
+	defer func() { gatewayReadyPollInterval = orig }()
+
+	t.Run("times out as not ready when the workload never becomes ready", func(t *testing.T) {
+		// Updated revision is the only revision but its pod is unavailable (e.g.
+		// crash-looping): not a roll, never ready. The window must expire not-ready.
+		cs := k8sfake.NewSimpleClientset(gatewayDeployment(1, 2, 2, 1, 1, 0))
+		ready, reason := WaitForGatewayReady(context.Background(), cs, "gw-ns", 50*time.Millisecond)
+		if ready {
+			t.Fatal("ready = true, want false on timeout so the gateway becomes Degraded")
+		}
+		if reason == "" {
+			t.Error("expected a non-empty reason recording why readiness was not reached")
+		}
+	})
+
+	t.Run("returns ready once the new revision is rolled out", func(t *testing.T) {
+		cs := k8sfake.NewSimpleClientset(gatewayDeployment(1, 2, 2, 1, 1, 1))
+		ready, reason := WaitForGatewayReady(context.Background(), cs, "gw-ns", time.Second)
+		if !ready {
+			t.Fatalf("ready = false (reason %q), want true for a fully rolled-out workload", reason)
+		}
+	})
+
+	t.Run("cancelled context returns not ready", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		cs := k8sfake.NewSimpleClientset(gatewayDeployment(1, 2, 2, 1, 1, 1))
+		ready, _ := WaitForGatewayReady(ctx, cs, "gw-ns", time.Second)
+		if ready {
+			t.Fatal("ready = true, want false when the context is cancelled")
 		}
 	})
 }
