@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,10 +43,11 @@ func gatewayDeployment(replicas, generation, observedGeneration, updated, total,
 // See gateway-release-rollout.spec.md.
 func TestDeploymentRolloutComplete(t *testing.T) {
 	tests := []struct {
-		name           string
-		deploy         *appsv1.Deployment
-		wantComplete   bool
-		wantRollingOut bool
+		name               string
+		deploy             *appsv1.Deployment
+		wantComplete       bool
+		wantRollingOut     bool
+		wantReasonContains string
 	}{
 		{
 			// Success: the new revision is fully rolled out and available.
@@ -69,11 +71,24 @@ func TestDeploymentRolloutComplete(t *testing.T) {
 			wantRollingOut: true,
 		},
 		{
-			// Rollout in progress: the new revision is up but an old replica is
-			// still terminating (surge). Not complete until it is gone.
-			name:           "old replica still terminating",
-			deploy:         gatewayDeployment(1, 2, 2, 1, 2, 2),
-			wantRollingOut: true,
+			// Rollout in progress: the new revision is up (available == total) but an
+			// old replica is still terminating (surge). Not complete until it is gone.
+			name:               "old replica still terminating",
+			deploy:             gatewayDeployment(1, 2, 2, 1, 2, 2),
+			wantRollingOut:     true,
+			wantReasonContains: "terminate",
+		},
+		{
+			// Rollout in progress but stuck: under maxUnavailable:0 the old replica is
+			// retained because the updated pod is not available yet (e.g.
+			// ImagePullBackOff). available (1) < total (2) distinguishes this from a
+			// healthy surge, so the reason must not claim an old replica is winding
+			// down. Still rollingOut -- only the timeout (WaitForGatewayReady) can
+			// tell a slow pull from a stuck one.
+			name:               "updated pod not available retains old replica",
+			deploy:             gatewayDeployment(1, 2, 2, 1, 2, 1),
+			wantRollingOut:     true,
+			wantReasonContains: "not yet available",
 		},
 		{
 			// Failed readiness / steady-state degradation: the updated revision is
@@ -101,6 +116,9 @@ func TestDeploymentRolloutComplete(t *testing.T) {
 			}
 			if complete && reason != "" {
 				t.Errorf("expected empty reason when complete, got %q", reason)
+			}
+			if tc.wantReasonContains != "" && !strings.Contains(reason, tc.wantReasonContains) {
+				t.Errorf("reason = %q, want it to contain %q", reason, tc.wantReasonContains)
 			}
 		})
 	}

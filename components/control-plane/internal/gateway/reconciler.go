@@ -936,7 +936,17 @@ func deploymentRolloutComplete(deploy *appsv1.Deployment) (complete bool, rollin
 		return false, true, fmt.Sprintf("%d/%d updated replicas rolled out", deploy.Status.UpdatedReplicas, desired)
 	}
 	if deploy.Status.Replicas > deploy.Status.UpdatedReplicas {
-		return false, true, fmt.Sprintf("waiting for %d old replica(s) to terminate", deploy.Status.Replicas-deploy.Status.UpdatedReplicas)
+		old := deploy.Status.Replicas - deploy.Status.UpdatedReplicas
+		if deploy.Status.AvailableReplicas < deploy.Status.Replicas {
+			// With maxUnavailable:0 the old replica(s) are kept running until the
+			// updated revision becomes available, so an unavailable pod during the
+			// surge window means the new revision is not up yet (e.g.
+			// ImagePullBackOff or a slow start), not that an old replica is winding
+			// down. Report that truthfully so an operator debugging a stuck roll is
+			// not misdirected to a healthy-looking termination message.
+			return false, true, fmt.Sprintf("updated revision not yet available; %d old replica(s) retained", old)
+		}
+		return false, true, fmt.Sprintf("waiting for %d old replica(s) to terminate", old)
 	}
 	if deploy.Status.AvailableReplicas < desired {
 		return false, false, fmt.Sprintf("%d/%d updated replicas available", deploy.Status.AvailableReplicas, desired)
